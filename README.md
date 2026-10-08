@@ -32,7 +32,7 @@ iPhone 后置相机取景时，按当前时间、位置和手机姿态，把计�
 反解先归一化，再
 
 ```math
-h=\arcsin(d_z),\qquad A=\operatorname{atan2}(-d_y,d_x)
+h=\arcsin(d_z),\qquad A=\mathrm{atan2}(-d_y,d_x)
 ```
 
 设备坐标是 $`+X`$ 向右、$`+Y`$ 指向手机顶部、$`+Z`$ 指出屏幕。后置相机的光轴在设备坐标里是 $`(0,0,-1)`$。Core Motion 旋转矩阵的元素记为 $`m_{ij}`$。代码把设备向量 $`\mathbf{d}`$ 乘以该矩阵的转置，得到世界坐标：
@@ -208,7 +208,7 @@ $`1737.4\,\mathrm{km}`$ 是采用的月球半径。站心修正只改方向，�
 
 ```math
 \begin{aligned}
-\alpha&=\operatorname{atan2}(\sin\lambda\cos\varepsilon-\tan\beta\sin\varepsilon,\ \cos\lambda)\\
+\alpha&=\mathrm{atan2}(\sin\lambda\cos\varepsilon-\tan\beta\sin\varepsilon,\ \cos\lambda)\\
 \delta&=\arcsin(\sin\beta\cos\varepsilon+\cos\beta\sin\varepsilon\sin\lambda)
 \end{aligned}
 ```
@@ -256,7 +256,7 @@ H=\mathrm{wrap}_{\pi}(\theta+\lambda_{\oplus}-\alpha)
 赤经改正
 
 ```math
-\Delta\alpha=\operatorname{atan2}(-\rho\cos\varphi'\sin\pi_{\mathrm{m}}\sin H,\ \cos\delta-\rho\cos\varphi'\sin\pi_{\mathrm{m}}\cos H)
+\Delta\alpha=\mathrm{atan2}(-\rho\cos\varphi'\sin\pi_{\mathrm{m}}\sin H,\ \cos\delta-\rho\cos\varphi'\sin\pi_{\mathrm{m}}\cos H)
 ```
 
 记分母为 $`G=\cos\delta-\rho\cos\varphi'\sin\pi_{\mathrm{m}}\cos H`$，站心赤纬和改正后的时角是
@@ -264,7 +264,7 @@ H=\mathrm{wrap}_{\pi}(\theta+\lambda_{\oplus}-\alpha)
 ```math
 \begin{aligned}
 \alpha'&=\mathrm{wrap}_{\pi}(\alpha+\Delta\alpha)\\
-\delta'&=\operatorname{atan2}\bigl((\sin\delta-\rho\sin\varphi'\sin\pi_{\mathrm{m}})\cos\Delta\alpha,\ G\bigr)\\
+\delta'&=\mathrm{atan2}\bigl((\sin\delta-\rho\sin\varphi'\sin\pi_{\mathrm{m}})\cos\Delta\alpha,\ G\bigr)\\
 H'&=\mathrm{wrap}_{\pi}(\theta+\lambda_{\oplus}-\alpha')
 \end{aligned}
 ```
@@ -282,7 +282,7 @@ h=\arcsin(\sin h)
 方位角公式以正南为零，加上 $`\pi`$ 后变成从正北量起：
 
 ```math
-A_{\mathrm{S}}=\operatorname{atan2}(\sin H',\ \cos H'\sin\varphi-\tan\delta'\cos\varphi)
+A_{\mathrm{S}}=\mathrm{atan2}(\sin H',\ \cos H'\sin\varphi-\tan\delta'\cos\varphi)
 ```
 
 ```math
@@ -344,7 +344,7 @@ X=\frac{1}{\sin h+0.50572\,(h+6.07995)^{-1.6364}}
 Apple Developer Program（付费）用户可用 WeatherKit 获取当前能见度 $`V`$（千米）。
 
 ```math
-\tau_{550}=\operatorname{clamp}(4.8/V,\ 0.05,\ 2.5)
+\tau_{550}=\mathrm{clamp}(4.8/V,\ 0.05,\ 2.5)
 ```
 
 $`40\,\mathrm{km}`$ 为 $`0.12`$。
@@ -366,7 +366,7 @@ $`40\,\mathrm{km}`$ 为 $`0.12`$。
 相位角 $`i`$ 是从月亮看太阳和观测者之间的夹角：
 
 ```math
-i=\operatorname{atan2}(R\sin\psi,\ \Delta_{\mathrm{AU}}-R\cos\psi)
+i=\mathrm{atan2}(R\sin\psi,\ \Delta_{\mathrm{AU}}-R\cos\psi)
 ```
 
 亮面比例是圆盘上被照亮部分的投影面积比
@@ -378,7 +378,7 @@ k=(1+\cos i)/2
 明暗界线亮缘中点的位置角是
 
 ```math
-\chi=\operatorname{atan2}\bigl(\cos\delta_{\odot}\sin(\alpha_{\odot}-\alpha'),\ \sin\delta_{\odot}\cos\delta'-\cos\delta_{\odot}\sin\delta'\cos(\alpha_{\odot}-\alpha')\bigr)
+\chi=\mathrm{atan2}\bigl(\cos\delta_{\odot}\sin(\alpha_{\odot}-\alpha'),\ \sin\delta_{\odot}\cos\delta'-\cos\delta_{\odot}\sin\delta'\cos(\alpha_{\odot}-\alpha')\bigr)
 ```
 
 盈亏不看 $`k`$，而看地心黄经差。令 $`E_{\lambda}=\mathrm{wrap}_{360}(\lambda-\lambda_{\odot})`$，则 $`E_{\lambda}<180^{\circ}`$ 为盈。名称按 $`k`$ 划分：$`\ge 0.98`$ 为满月，$`\le 0.02`$ 为新月；盈月在 $`0.35`$、$`0.65`$ 处分成峨眉月、上弦月、盈凸月，亏月对应残月、下弦月、亏凸月。
@@ -389,7 +389,7 @@ k=(1+\cos i)/2
 
 ```math
 \begin{aligned}
-\mathbf{N}&=\operatorname{normalize}(-\sin I\sin\Omega,\ \sin I\cos\Omega,\ \cos I)\\
+\mathbf{N}&=\mathrm{normalize}(-\sin I\sin\Omega,\ \sin I\cos\Omega,\ \cos I)\\
 \mathbf{M}&=(\cos\beta\cos\lambda,\ \cos\beta\sin\lambda,\ \sin\beta)
 \end{aligned}
 ```
@@ -400,12 +400,12 @@ k=(1+\cos i)/2
 \mathbf{E}_{0}=(-\cos L',\ -\sin L',\ 0)
 ```
 
-把它投到垂直于 $`\mathbf{N}`$ 的平面上并归一化，得到月面本初子午线方向 $`\mathbf{P}`$。月面东方是 $`\mathbf{E}=\operatorname{normalize}(\mathbf{N}\times\mathbf{P})`$。从月心指向地球的方向是 $`-\mathbf{M}`$，于是
+把它投到垂直于 $`\mathbf{N}`$ 的平面上并归一化，得到月面本初子午线方向 $`\mathbf{P}`$。月面东方是 $`\mathbf{E}=\mathrm{normalize}(\mathbf{N}\times\mathbf{P})`$。从月心指向地球的方向是 $`-\mathbf{M}`$，于是
 
 ```math
 \begin{aligned}
 \beta_{\mathrm{lib}}&=\arcsin((-\mathbf{M})\cdot\mathbf{N})\\
-\lambda_{\mathrm{lib}}&=\operatorname{atan2}((-\mathbf{M})\cdot\mathbf{E},\ (-\mathbf{M})\cdot\mathbf{P})
+\lambda_{\mathrm{lib}}&=\mathrm{atan2}((-\mathbf{M})\cdot\mathbf{E},\ (-\mathbf{M})\cdot\mathbf{P})
 \end{aligned}
 ```
 
@@ -413,14 +413,14 @@ k=(1+\cos i)/2
 
 ```math
 \begin{aligned}
-\mathbf{n}_{\star}&=\operatorname{normalize}\bigl((0,0,1)-\mathbf{M}_{\mathrm{eq}}\,[(0,0,1)\cdot\mathbf{M}_{\mathrm{eq}}]\bigr)\\
-\mathbf{e}_{\star}&=\operatorname{normalize}(\mathbf{M}_{\mathrm{eq}}\times\mathbf{n}_{\star})\\
-\mathbf{n}_{\mathrm{M}}&=\operatorname{normalize}(\mathbf{N}_{\mathrm{eq}}-\mathbf{M}_{\mathrm{eq}}\,(\mathbf{N}_{\mathrm{eq}}\cdot\mathbf{M}_{\mathrm{eq}}))
+\mathbf{n}_{\star}&=\mathrm{normalize}\bigl((0,0,1)-\mathbf{M}_{\mathrm{eq}}\,[(0,0,1)\cdot\mathbf{M}_{\mathrm{eq}}]\bigr)\\
+\mathbf{e}_{\star}&=\mathrm{normalize}(\mathbf{M}_{\mathrm{eq}}\times\mathbf{n}_{\star})\\
+\mathbf{n}_{\mathrm{M}}&=\mathrm{normalize}(\mathbf{N}_{\mathrm{eq}}-\mathbf{M}_{\mathrm{eq}}\,(\mathbf{N}_{\mathrm{eq}}\cdot\mathbf{M}_{\mathrm{eq}}))
 \end{aligned}
 ```
 
 ```math
-P=\operatorname{atan2}(\mathbf{n}_{\mathrm{M}}\cdot\mathbf{e}_{\star},\ \mathbf{n}_{\mathrm{M}}\cdot\mathbf{n}_{\star})
+P=\mathrm{atan2}(\mathbf{n}_{\mathrm{M}}\cdot\mathbf{e}_{\star},\ \mathbf{n}_{\mathrm{M}}\cdot\mathbf{n}_{\star})
 ```
 
 投影长度小于 $`10^{-8}`$ 时 $`P=0`$。
@@ -484,7 +484,7 @@ R_{x}(\theta)=\begin{pmatrix}1&0&0\\0&\cos\theta&-\sin\theta\\0&\sin\theta&\cos\
 \mathbf{p}=R_{x}(-\beta_{\mathrm{lib}})\,R_{y}(-\lambda_{\mathrm{lib}})\,\mathbf{n}
 ```
 
-纹理经纬度是 $`\lambda_{t}=\operatorname{atan2}(p_{x},p_{z})`$、$`\varphi_{t}=\arcsin(p_{y})`$。图上的归一化坐标
+纹理经纬度是 $`\lambda_{t}=\mathrm{atan2}(p_{x},p_{z})`$、$`\varphi_{t}=\arcsin(p_{y})`$。图上的归一化坐标
 
 ```math
 u=\frac12+\frac{\lambda_{t}}{2\pi},\qquad v=\frac12-\frac{\varphi_{t}}{\pi}
@@ -560,7 +560,7 @@ d_{\mathrm{px}}=\frac{\tan\Delta h}{\tan(\mathrm{FOV}_{x}/2)}\cdot\frac{W}{2}
 长度不小于 $`10^{-6}`$ 时，相对画面上方的顺时针角减去轴位置角：
 
 ```math
-\psi_{\mathrm{sprite}}=\operatorname{atan2}(\mathbf{n}\cdot\mathbf{r},\ \mathbf{n}\cdot\mathbf{u})-P
+\psi_{\mathrm{sprite}}=\mathrm{atan2}(\mathbf{n}\cdot\mathbf{r},\ \mathbf{n}\cdot\mathbf{u})-P
 ```
 
 退化时 $`\psi_{\mathrm{sprite}}=-P`$。
@@ -581,10 +581,10 @@ n_{x}=\frac{\mathbf{m}\cdot\mathbf{r}}{\tan(\mathrm{FOV}_{x}/2)},\qquad n_{y}=\f
 t=\min\left\{\frac{b_{x}-c_{x}}{s_{x}},\frac{b_{y}-c_{y}}{s_{y}}\right\}
 ```
 
-其中 $`b`$ 是该分量指向的那条边，$`c`$ 是中心，只计入分母与行进方向同号的项。锚点是 $`c+t(s_{x},s_{y})`$。箭头旋转 $`\operatorname{atan2}(s_{x},-s_{y})`$，角距离是
+其中 $`b`$ 是该分量指向的那条边，$`c`$ 是中心，只计入分母与行进方向同号的项。锚点是 $`c+t(s_{x},s_{y})`$。箭头旋转 $`\mathrm{atan2}(s_{x},-s_{y})`$，角距离是
 
 ```math
-\gamma=\arccos\bigl(\operatorname{clamp}(w,-1,1)\bigr)
+\gamma=\arccos\bigl(\mathrm{clamp}(w,-1,1)\bigr)
 ```
 
 月亮在身后时 $`w<0`$，$`\gamma>90^{\circ}`$。
@@ -611,7 +611,7 @@ t=\min\left\{\frac{b_{x}-c_{x}}{s_{x}},\frac{b_{y}-c_{y}}{s_{y}}\right\}
 两个偏差以度存在 `UserDefaults`。之后每次投影和合成前先改正：
 
 ```math
-A\leftarrow\mathrm{wrap}_{\pi}(A+\Delta A),\qquad h\leftarrow\operatorname{clamp}(h+\Delta h,-\pi/2,\pi/2)
+A\leftarrow\mathrm{wrap}_{\pi}(A+\Delta A),\qquad h\leftarrow\mathrm{clamp}(h+\Delta h,-\pi/2,\pi/2)
 ```
 
 这里的 $`\Delta A`$、$`\Delta h`$ 已换成弧度。
