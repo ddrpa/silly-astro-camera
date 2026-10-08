@@ -320,6 +320,39 @@ enum MoonLogicTests {
         let rolledRotation = MoonProjection.spriteRotation(pose: eastUp, axisPositionAngle: 0)
         expect(abs(rolledRotation - .pi / 2) < 0.05, "屏幕朝东时天北极应顺时针 90°，实际 \(rolledRotation)")
 
+        let horizonPose = MoonProjection.looking(
+            at: 0,
+            altitude: 0,
+            latitude: latitude,
+            horizontalFOV: 1,
+            verticalFOV: 0.75
+        )
+        let flattened = MoonProjection.project(
+            azimuth: 0,
+            altitude: 0,
+            angularRadius: 0.005,
+            axisPositionAngle: 0,
+            pose: horizonPose,
+            imageSize: size,
+            verticalScale: 0.8,
+            redDispersion: -0.001,
+            blueDispersion: 0.002
+        )
+        expect(flattened != nil, "地平方向应能投影")
+        if let flattened {
+            expect(abs(flattened.verticalScale - 0.8) < 1e-6, "竖直缩放 \(flattened.verticalScale)")
+            expect(abs(flattened.zenithRotation) < 0.05, "朝地平时天顶应在画面上方，实际 \(flattened.zenithRotation)")
+            expect(flattened.redDispersion < 0, "红色散应朝地平")
+            expect(flattened.blueDispersion > 0, "蓝色散应朝天顶")
+        }
+
+        let shifted = paris.corrected(azimuthOffset: 0, altitudeOffset: 0.01)
+        expect(shifted.verticalScale == paris.verticalScale, "校正不应重算压扁")
+        expect(shifted.tint == paris.tint, "校正不应重算消光")
+        expect(shifted.redDispersion == paris.redDispersion && shifted.blueDispersion == paris.blueDispersion, "校正不应重算色散")
+        expect(shifted.earthshine == paris.earthshine, "校正不应重算地照")
+
+        expectAtmosphere(expect)
         try expectMoonImage(expect)
         try expectComposite(expect)
 
@@ -365,6 +398,51 @@ enum MoonLogicTests {
         let newCenter = brightness(newMoon, x: 12, y: 12)
         expect(fullCenter > 100, "满月中心亮度 \(fullCenter)")
         expect(newCenter < 20, "新月中心亮度 \(newCenter)")
+
+        let quarterArguments = (
+            phaseAngle: Double.pi / 2,
+            brightLimbPositionAngle: 0.0,
+            axisPositionAngle: 0.0,
+            librationLongitude: 0.0,
+            librationLatitude: 0.0,
+            size: 24
+        )
+        guard let dayQuarter = MoonImageRenderer.render(
+            albedo: albedo,
+            phaseAngle: quarterArguments.phaseAngle,
+            brightLimbPositionAngle: quarterArguments.brightLimbPositionAngle,
+            axisPositionAngle: quarterArguments.axisPositionAngle,
+            librationLongitude: quarterArguments.librationLongitude,
+            librationLatitude: quarterArguments.librationLatitude,
+            earthshine: 0,
+            size: quarterArguments.size
+        ), let nightQuarter = MoonImageRenderer.render(
+            albedo: albedo,
+            phaseAngle: quarterArguments.phaseAngle,
+            brightLimbPositionAngle: quarterArguments.brightLimbPositionAngle,
+            axisPositionAngle: quarterArguments.axisPositionAngle,
+            librationLongitude: quarterArguments.librationLongitude,
+            librationLatitude: quarterArguments.librationLatitude,
+            earthshine: 0.5,
+            size: quarterArguments.size
+        ) else {
+            expect(false, "上弦月渲染失败")
+            return
+        }
+        let lit = (x: 12, y: 3)
+        let dark = (x: 12, y: 20)
+        let dayLitAlpha = alpha(dayQuarter, x: lit.x, y: lit.y)
+        let dayDarkAlpha = alpha(dayQuarter, x: dark.x, y: dark.y)
+        expect(dayLitAlpha > 250, "白昼阳面应不透明，实际 \(dayLitAlpha)")
+        expect(dayDarkAlpha < 5, "白昼暗面应接近透明，实际 \(dayDarkAlpha)")
+        let nightLit = brightness(nightQuarter, x: lit.x, y: lit.y)
+        let nightDark = brightness(nightQuarter, x: dark.x, y: dark.y)
+        let nightDarkAlpha = alpha(nightQuarter, x: dark.x, y: dark.y)
+        expect(nightDarkAlpha > 0, "夜间暗面应有灰光")
+        expect(nightDark * 4 < nightLit, "灰光应明显暗于阳面，暗 \(nightDark)，亮 \(nightLit)")
+
+        expect(MoonEphemeris.nightSkyWeight(sunAltitude: SkyAngles.radians(fromDegrees: 10)) == 0, "太阳高于 6° 时没有夜天权重")
+        expect(MoonEphemeris.nightSkyWeight(sunAltitude: SkyAngles.radians(fromDegrees: -20)) == 1, "太阳低于 -8° 时夜天权重为 1")
     }
 
     private static func expectComposite(_ expect: (Bool, String) -> Void) throws {
@@ -393,6 +471,121 @@ enum MoonLogicTests {
         let turnedPeak = peak(turned)
         expect(uprightPeak.y < 10 && abs(uprightPeak.x - 10) <= 1, "未旋转时亮点应在中心上方，实际 \(uprightPeak)")
         expect(turnedPeak.x > 10 && abs(turnedPeak.y - 10) <= 1, "顺时针 90° 后亮点应在中心右侧，实际 \(turnedPeak)")
+
+        guard let tinted = MoonCompositor.composite(
+            base: base,
+            sprite: sprite,
+            center: CGPoint(x: 10, y: 10),
+            pixelRadius: 2.5,
+            rotation: .pi / 2,
+            verticalScale: 1,
+            zenithRotation: 0,
+            tint: MoonTint(red: 1, green: 1, blue: 0)
+        ) else {
+            expect(false, "偏色合成失败")
+            return
+        }
+        let tintedPeak = peak(tinted)
+        let tintedPixel = pixel(tinted, x: tintedPeak.x, y: tintedPeak.y)
+        expect(tintedPeak.x > 10 && abs(tintedPeak.y - 10) <= 1, "偏色后亮点仍应在右侧，实际 \(tintedPeak)")
+        expect(tintedPixel.blue == 0 && tintedPixel.red > 200, "蓝色应被消掉，实际 \(tintedPixel)")
+
+        guard let source = solidImage(width: 1, height: 1, red: 200, green: 100, blue: 50, alpha: 180),
+              let channels = MoonCompositor.channelImages(
+                sprite: source,
+                tint: MoonTint(red: 2, green: 1, blue: 0)
+              ) else {
+            expect(false, "通道图创建失败")
+            return
+        }
+        let redChannel = pixel(channels.red, x: 0, y: 0)
+        let greenChannel = pixel(channels.green, x: 0, y: 0)
+        let blueChannel = pixel(channels.blue, x: 0, y: 0)
+        expect(redChannel.red == 180 && redChannel.green == 0 && redChannel.blue == 0, "红增益应截断到 alpha，实际 \(redChannel)")
+        expect(greenChannel.green == 100 && greenChannel.red == 0 && greenChannel.blue == 0, "绿通道应只保留绿色，实际 \(greenChannel)")
+        expect(blueChannel.blue == 0 && blueChannel.red == 0 && blueChannel.green == 0, "蓝增益为 0 时应清空蓝色，实际 \(blueChannel)")
+        expect(alpha(channels.red, x: 0, y: 0) == 180, "通道图应保留原来的 alpha")
+    }
+
+    private static func expectAtmosphere(_ expect: (Bool, String) -> Void) {
+        let seaLevel = Atmosphere.refractionRadians(trueAltitude: 0, altitudeMeters: 0)
+        let seaLevelArcminutes = SkyAngles.degrees(fromRadians: seaLevel) * 60
+        expect(seaLevelArcminutes > 28.5 && seaLevelArcminutes < 29.5, "地平折射 \(seaLevelArcminutes)′")
+
+        let mid = Atmosphere.refractionRadians(
+            trueAltitude: SkyAngles.radians(fromDegrees: 45),
+            altitudeMeters: 0
+        )
+        let midArcminutes = SkyAngles.degrees(fromRadians: mid) * 60
+        expect(midArcminutes > 0.9 && midArcminutes < 1.15, "45° 折射 \(midArcminutes)′")
+
+        let zenith = Atmosphere.refractionRadians(
+            trueAltitude: .pi / 2,
+            altitudeMeters: 0
+        )
+        expect(SkyAngles.degrees(fromRadians: zenith) * 60 < 0.05, "天顶折射应接近 0")
+
+        let high = Atmosphere.refractionRadians(trueAltitude: 0, altitudeMeters: 8500)
+        expect(abs(high / seaLevel - exp(-1)) < 0.02, "一个标高处折射应按气压缩小")
+
+        let radius = SkyAngles.radians(fromDegrees: 0.25)
+        let horizon = Atmosphere.appearance(trueAltitude: 0, angularRadius: radius, altitudeMeters: 0)
+        expect(horizon.verticalScale < 0.95 && horizon.verticalScale > 0.7, "地平竖直缩放 \(horizon.verticalScale)")
+        expect(horizon.redDispersion < 0 && horizon.blueDispersion > 0, "地平色散方向")
+        expect(horizon.tint.green == 1, "绿通道应保持 1")
+        expect(horizon.tint.blue < horizon.tint.red, "地平蓝色透过率应低于红色")
+
+        let highMoon = Atmosphere.appearance(
+            trueAltitude: SkyAngles.radians(fromDegrees: 70),
+            angularRadius: radius,
+            altitudeMeters: 0
+        )
+        expect(highMoon.verticalScale > 0.98, "高空竖直缩放 \(highMoon.verticalScale)")
+        expect(
+            highMoon.tint.red > 0.9 && highMoon.tint.red < 1.3
+                && highMoon.tint.blue > 0.7 && highMoon.tint.blue < 1.05,
+            "高空颜色应接近白色 \(highMoon.tint)"
+        )
+        let clearRatio = highMoon.tint.blue / highMoon.tint.red
+        expect(clearRatio > 0.7, "晴空高空蓝/红应接近 1，实际 \(clearRatio)")
+
+        let hazyDepth = Atmosphere.aerosolOpticalDepth(visibilityKilometers: 5)
+        expect(abs(hazyDepth - 0.96) < 1e-9, "5 km 能见度光学厚度 \(hazyDepth)")
+        expect(abs(Atmosphere.aerosolOpticalDepth(visibilityKilometers: 40) - 0.12) < 1e-9, "40 km 能见度应为晴空光学厚度")
+        expect(Atmosphere.aerosolOpticalDepth(visibilityKilometers: 0.2) == 2.5, "浓雾应顶到光学厚度上限")
+        let hazyHorizon = Atmosphere.appearance(
+            trueAltitude: 0,
+            angularRadius: radius,
+            altitudeMeters: 0,
+            aerosolOpticalDepth: hazyDepth
+        )
+        expect(hazyHorizon.tint.green == 1, "霾天绿通道仍为 1")
+        let hazyRatio = hazyHorizon.tint.blue / hazyHorizon.tint.red
+        expect(hazyRatio < clearRatio * 0.5, "霾天低空蓝/红 \(hazyRatio) 应明显小于晴空高空 \(clearRatio)")
+
+        let lifted = Atmosphere.appearance(
+            trueAltitude: SkyAngles.radians(fromDegrees: -0.4),
+            angularRadius: radius,
+            altitudeMeters: 0
+        )
+        let upperLimb = lifted.apparentAltitude + lifted.verticalScale * radius
+        expect(upperLimb > 0, "几何 -0.4° 时视上边缘应在地平线上")
+        expect(
+            MoonProjection.shouldDraw(
+                altitude: lifted.apparentAltitude,
+                angularRadius: radius,
+                verticalScale: lifted.verticalScale,
+                drawBelowHorizon: false,
+                calibrating: false
+            ),
+            "视上边缘露出时应绘制"
+        )
+    }
+
+    private static func alpha(_ image: CGImage, x: Int, y: Int) -> Int {
+        guard let data = image.dataProvider?.data, let bytes = CFDataGetBytePtr(data) else { return -1 }
+        let index = y * image.bytesPerRow + x * 4
+        return Int(bytes[index + 3])
     }
 
     private static func brightness(_ image: CGImage, x: Int, y: Int) -> Int {
@@ -410,6 +603,14 @@ enum MoonLogicTests {
             pixels[index + 3] = alpha
         }
         return image(pixels: pixels, width: width, height: height)
+    }
+
+    private static func pixel(_ image: CGImage, x: Int, y: Int) -> (red: Int, green: Int, blue: Int) {
+        guard let data = image.dataProvider?.data, let bytes = CFDataGetBytePtr(data) else {
+            return (-1, -1, -1)
+        }
+        let index = y * image.bytesPerRow + x * 4
+        return (Int(bytes[index]), Int(bytes[index + 1]), Int(bytes[index + 2]))
     }
 
     private static func peak(_ image: CGImage) -> (x: Int, y: Int) {

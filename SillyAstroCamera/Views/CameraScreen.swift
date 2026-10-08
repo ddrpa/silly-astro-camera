@@ -18,11 +18,8 @@ struct CameraScreen: View {
                 .position(x: frame.midX, y: frame.midY)
                 .gesture(previewGesture)
 
-                if let placement = model.overlayPlacement, let sprite = model.sprite {
-                    Image(decorative: sprite, scale: 1)
-                        .resizable()
-                        .frame(width: placement.pixelRadius * 2, height: placement.pixelRadius * 2)
-                        .rotationEffect(.radians(placement.rotation))
+                if let placement = model.overlayPlacement, let channels = model.previewChannels {
+                    MoonDiskOverlay(channels: channels, placement: placement)
                         .position(x: frame.minX + placement.center.x, y: frame.minY + placement.center.y)
                         .allowsHitTesting(false)
                 }
@@ -269,6 +266,39 @@ struct CameraScreen: View {
 
     @State private var modelPreviewSize: CGSize = .zero
     @State private var modelScreenOrientation: ScreenOrientation = .portrait
+}
+
+private struct MoonDiskOverlay: View {
+    var channels: MoonChannelImages
+    var placement: MoonPlacement
+
+    var body: some View {
+        let diameter = placement.pixelRadius * 2
+        let relative = placement.rotation - placement.zenithRotation
+        ZStack {
+            channel(channels.red, shift: placement.redDispersion, diameter: diameter, relative: relative)
+            channel(channels.green, shift: 0, diameter: diameter, relative: relative)
+            channel(channels.blue, shift: placement.blueDispersion, diameter: diameter, relative: relative)
+        }
+        .frame(width: diameter, height: diameter)
+        .compositingGroup()
+    }
+
+    private func channel(
+        _ image: CGImage,
+        shift: CGFloat,
+        diameter: CGFloat,
+        relative: CGFloat
+    ) -> some View {
+        Image(decorative: image, scale: 1)
+            .resizable()
+            .frame(width: diameter, height: diameter)
+            .rotationEffect(.radians(relative))
+            .scaleEffect(x: 1, y: placement.verticalScale)
+            .rotationEffect(.radians(placement.zenithRotation))
+            .offset(placement.zenithOffset(shift))
+            .blendMode(.plusLighter)
+    }
 }
 
 private struct MoonGuideMarker: View {

@@ -13,9 +13,14 @@ struct MoonState: Equatable {
     var librationLatitude: Double
     var distanceKilometers: Double
     var waxing: Bool
+    var verticalScale: Double
+    var tint: MoonTint
+    var redDispersion: Double
+    var blueDispersion: Double
+    var earthshine: Double
 
     var isEntirelyBelowHorizon: Bool {
-        altitude < -angularRadius
+        altitude < -angularRadius * verticalScale
     }
 
     var phaseName: String {
@@ -81,7 +86,8 @@ enum MoonEphemeris {
         at date: Date,
         latitudeDegrees: Double,
         longitudeDegrees: Double,
-        altitudeMeters: Double
+        altitudeMeters: Double,
+        aerosolOpticalDepth: Double = Atmosphere.clearAerosolOpticalDepth
     ) -> MoonState {
         let julian = julianDate(from: date)
         let centuries = (julian - 2_451_545.0) / 36_525
@@ -135,10 +141,26 @@ enum MoonEphemeris {
         let elongation = SkyAngles.wrap360(
             SkyAngles.degrees(fromRadians: moon.longitude - sun.longitude)
         )
+        let angularRadius = asin(moonRadiusKilometers / moon.distance)
+        let atmosphere = Atmosphere.appearance(
+            trueAltitude: horizontal.altitude,
+            angularRadius: angularRadius,
+            altitudeMeters: altitudeMeters,
+            aerosolOpticalDepth: aerosolOpticalDepth
+        )
+        let sunHourAngle = SkyAngles.wrapPi(
+            SkyAngles.radians(fromDegrees: sidereal) + longitude - sunEquatorial.rightAscension
+        )
+        let sunAltitude = horizontalCoordinates(
+            hourAngle: sunHourAngle,
+            declination: sunEquatorial.declination,
+            latitude: latitude
+        ).altitude
+        let earthshine = nightSkyWeight(sunAltitude: sunAltitude) * (1 - cos(phase.phaseAngle)) / 2
         return MoonState(
             azimuth: horizontal.azimuth,
-            altitude: horizontal.altitude,
-            angularRadius: asin(moonRadiusKilometers / moon.distance),
+            altitude: atmosphere.apparentAltitude,
+            angularRadius: angularRadius,
             illuminatedFraction: (1 + cos(phase.phaseAngle)) / 2,
             phaseAngle: phase.phaseAngle,
             brightLimbPositionAngle: phase.brightLimbPositionAngle,
@@ -146,7 +168,12 @@ enum MoonEphemeris {
             librationLongitude: orientation.librationLongitude,
             librationLatitude: orientation.librationLatitude,
             distanceKilometers: moon.distance,
-            waxing: elongation < 180
+            waxing: elongation < 180,
+            verticalScale: atmosphere.verticalScale,
+            tint: atmosphere.tint,
+            redDispersion: atmosphere.redDispersion,
+            blueDispersion: atmosphere.blueDispersion,
+            earthshine: earthshine
         )
     }
 
@@ -159,6 +186,13 @@ enum MoonEphemeris {
             SkyAngles.degrees(fromRadians: moon.latitude),
             moon.distance
         )
+    }
+
+    static func nightSkyWeight(sunAltitude: Double) -> Double {
+        let day = SkyAngles.radians(fromDegrees: 6)
+        let night = SkyAngles.radians(fromDegrees: -8)
+        let t = SkyAngles.clamp((day - sunAltitude) / (day - night), 0, 1)
+        return t * t * (3 - 2 * t)
     }
 
     static func horizontalCoordinates(

@@ -84,6 +84,7 @@ enum MoonImageRenderer {
         axisPositionAngle: Double,
         librationLongitude: Double,
         librationLatitude: Double,
+        earthshine: Double = 0,
         size: Int
     ) -> CGImage? {
         guard size > 1 else { return nil }
@@ -94,6 +95,7 @@ enum MoonImageRenderer {
             cos(relativeLimb) * sinePhase,
             cos(phaseAngle)
         ))
+        let earthshineGain = max(earthshine, 0)
         var pixels = [UInt8](repeating: 0, count: size * size * 4)
         let center = Double(size - 1) / 2
         let radius = center
@@ -115,15 +117,25 @@ enum MoonImageRenderer {
                 let light = max(0, simd_dot(viewPoint, sun))
                 let radial = sqrt(radiusSquared)
                 let fade = radial < 0.985 ? 1 : max(0, (1 - radial) / 0.015)
-                let alpha = fade
+                let cover = smoothstep(0, 0.05, light)
+                let earth = 0.12 * nz * earthshineGain
+                let sunAlpha = fade * cover
+                let earthAlpha = fade * earth * (1 - cover)
+                let alpha = sunAlpha + earthAlpha
+                let shade = light * sunAlpha + earthAlpha
                 let index = (y * size + x) * 4
-                pixels[index] = UInt8(SkyAngles.clamp(color.x * light * alpha, 0, 1) * 255)
-                pixels[index + 1] = UInt8(SkyAngles.clamp(color.y * light * alpha, 0, 1) * 255)
-                pixels[index + 2] = UInt8(SkyAngles.clamp(color.z * light * alpha, 0, 1) * 255)
+                pixels[index] = UInt8(SkyAngles.clamp(color.x * shade, 0, 1) * 255)
+                pixels[index + 1] = UInt8(SkyAngles.clamp(color.y * shade, 0, 1) * 255)
+                pixels[index + 2] = UInt8(SkyAngles.clamp(color.z * shade, 0, 1) * 255)
                 pixels[index + 3] = UInt8(SkyAngles.clamp(alpha, 0, 1) * 255)
             }
         }
         return image(from: pixels, size: size)
+    }
+
+    private static func smoothstep(_ edge0: Double, _ edge1: Double, _ value: Double) -> Double {
+        let t = SkyAngles.clamp((value - edge0) / (edge1 - edge0), 0, 1)
+        return t * t * (3 - 2 * t)
     }
 
     private static func rotateY(_ point: SIMD3<Double>, _ angle: Double) -> SIMD3<Double> {

@@ -37,6 +37,18 @@ struct MoonPlacement: Equatable {
     var center: CGPoint
     var pixelRadius: CGFloat
     var rotation: CGFloat
+    var verticalScale: CGFloat
+    var zenithRotation: CGFloat
+    var tint: MoonTint
+    var redDispersion: CGFloat
+    var blueDispersion: CGFloat
+
+    func zenithOffset(_ pixelsTowardZenith: CGFloat) -> CGSize {
+        CGSize(
+            width: sin(zenithRotation) * pixelsTowardZenith,
+            height: -cos(zenithRotation) * pixelsTowardZenith
+        )
+    }
 }
 
 struct MoonGuide: Equatable {
@@ -100,7 +112,11 @@ enum MoonProjection {
         angularRadius: Double,
         axisPositionAngle: Double,
         pose: CameraPose,
-        imageSize: CGSize
+        imageSize: CGSize,
+        verticalScale: Double = 1,
+        tint: MoonTint = .neutral,
+        redDispersion: Double = 0,
+        blueDispersion: Double = 0
     ) -> MoonPlacement? {
         let moon = direction(azimuth: azimuth, altitude: altitude)
         let depth = simd_dot(moon, pose.forward)
@@ -118,7 +134,8 @@ enum MoonProjection {
         )
         let pixelRadius = tan(angularRadius) / halfWidth * imageSize.width / 2
         guard pixelRadius.isFinite, pixelRadius > 0 else { return nil }
-        let margin = pixelRadius
+        let scale = CGFloat(verticalScale.isFinite && verticalScale > 0 ? verticalScale : 1)
+        let margin = max(pixelRadius, pixelRadius * scale)
         if center.x < -margin || center.y < -margin
             || center.x > imageSize.width + margin || center.y > imageSize.height + margin {
             return nil
@@ -126,7 +143,12 @@ enum MoonProjection {
         return MoonPlacement(
             center: center,
             pixelRadius: pixelRadius,
-            rotation: spriteRotation(pose: pose, axisPositionAngle: axisPositionAngle)
+            rotation: spriteRotation(pose: pose, axisPositionAngle: axisPositionAngle),
+            verticalScale: scale,
+            zenithRotation: zenithRotation(pose: pose),
+            tint: tint,
+            redDispersion: pixels(forAngle: redDispersion, pose: pose, imageSize: imageSize),
+            blueDispersion: pixels(forAngle: blueDispersion, pose: pose, imageSize: imageSize)
         )
     }
 
@@ -136,7 +158,11 @@ enum MoonProjection {
         angularRadius: Double,
         axisPositionAngle: Double,
         pose: CameraPose,
-        imageSize: CGSize
+        imageSize: CGSize,
+        verticalScale: Double = 1,
+        tint: MoonTint = .neutral,
+        redDispersion: Double = 0,
+        blueDispersion: Double = 0
     ) -> MoonGuide? {
         guard imageSize.width > 1, imageSize.height > 1 else { return nil }
         if project(
@@ -145,7 +171,11 @@ enum MoonProjection {
             angularRadius: angularRadius,
             axisPositionAngle: axisPositionAngle,
             pose: pose,
-            imageSize: imageSize
+            imageSize: imageSize,
+            verticalScale: verticalScale,
+            tint: tint,
+            redDispersion: redDispersion,
+            blueDispersion: blueDispersion
         ) != nil {
             return nil
         }
@@ -249,16 +279,35 @@ enum MoonProjection {
     static func shouldDraw(
         altitude: Double,
         angularRadius: Double,
+        verticalScale: Double = 1,
         drawBelowHorizon: Bool,
         calibrating: Bool
     ) -> Bool {
         if calibrating {
             return true
         }
-        if altitude < -angularRadius && !drawBelowHorizon {
+        let scale = verticalScale.isFinite && verticalScale > 0 ? verticalScale : 1
+        if altitude < -angularRadius * scale && !drawBelowHorizon {
             return false
         }
         return true
+    }
+
+    static func zenithRotation(pose: CameraPose) -> CGFloat {
+        let zenith = SIMD3<Double>(0, 0, 1)
+        var projected = zenith - pose.forward * simd_dot(zenith, pose.forward)
+        let length = simd_length(projected)
+        if length < 1e-6 {
+            return 0
+        }
+        projected /= length
+        return CGFloat(atan2(simd_dot(projected, pose.right), simd_dot(projected, pose.up)))
+    }
+
+    static func pixels(forAngle angle: Double, pose: CameraPose, imageSize: CGSize) -> CGFloat {
+        let halfWidth = tan(pose.horizontalFOV / 2)
+        guard halfWidth > 0, imageSize.width > 0, angle.isFinite else { return 0 }
+        return CGFloat(tan(angle) / halfWidth * imageSize.width / 2)
     }
 
     static func looking(

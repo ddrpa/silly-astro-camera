@@ -17,6 +17,7 @@ final class CameraModel {
     var moonGuide: MoonGuide?
     var horizonMessage: String?
     var sprite: CGImage?
+    var previewChannels: MoonChannelImages?
     var statusMessage: String?
     var isCalibrating = false
     var calibrationCenter: CGPoint?
@@ -37,9 +38,19 @@ final class CameraModel {
     private var spriteKey: SpriteKey?
     private var requestedSpriteKey: SpriteKey?
     private var renderingSprite = false
+    private var captureSprite: CGImage?
+    private var previewSpriteToken = 0
+    private var channelKey: ChannelKey?
+    private var requestedChannelKey: ChannelKey?
+    private var splittingChannels = false
+    private var pendingAttitude: DeviceAttitude?
+    private var attitudeRefreshScheduled = false
     private var ephemerisTimer: Timer?
     private var pinchOrigin: Double?
     private var frozen: FrozenFrame?
+
+    private static let previewSpriteSize = 512
+    private static let captureSpriteSize = 2048
 
     func start() {
         albedo = MoonAlbedo.bundled()
@@ -55,8 +66,7 @@ final class CameraModel {
             self?.refreshOverlay()
         }
         orientationService.onUpdate = { [weak self] attitude in
-            self?.attitude = attitude
-            self?.refreshOverlay()
+            self?.ingest(attitude)
         }
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             Task { @MainActor [weak self] in
@@ -188,7 +198,7 @@ final class CameraModel {
             landscapeHorizontalFOV: session.optics()?.landscapeHorizontalFOV ?? pose.horizontalFOV,
             drawBelowHorizon: alignment.drawMoonBelowHorizon,
             calibrating: isCalibrating,
-            sprite: sprite,
+            sprite: captureSprite ?? sprite,
             location: attitude.flatMap { attitude in
                 guard let latitude = attitude.latitudeDegrees, let longitude = attitude.longitudeDegrees else {
                     return nil
@@ -235,10 +245,20 @@ final class CameraModel {
     var overlayPlacement: MoonPlacement? {
         guard var placement else {
             guard isCalibrating, previewSize.width > 0 else { return nil }
+            let fallbackPose = pose
             return MoonPlacement(
                 center: calibrationCenter ?? CGPoint(x: previewSize.width / 2, y: previewSize.height / 2),
                 pixelRadius: fallbackRadius,
-                rotation: pose.map { MoonProjection.spriteRotation(pose: $0, axisPositionAngle: moon?.axisPositionAngle ?? 0) } ?? 0
+                rotation: fallbackPose.map { MoonProjection.spriteRotation(pose: $0, axisPositionAngle: moon?.axisPositionAngle ?? 0) } ?? 0,
+                verticalScale: CGFloat(moon?.verticalScale ?? 1),
+                zenithRotation: fallbackPose.map { MoonProjection.zenithRotation(pose: $0) } ?? 0,
+                tint: moon?.tint ?? .neutral,
+                redDispersion: fallbackPose.map {
+                    MoonProjection.pixels(forAngle: moon?.redDispersion ?? 0, pose: $0, imageSize: previewSize)
+                } ?? 0,
+                blueDispersion: fallbackPose.map {
+                    MoonProjection.pixels(forAngle: moon?.blueDispersion ?? 0, pose: $0, imageSize: previewSize)
+                } ?? 0
             )
         }
         if isCalibrating, let calibrationCenter {
@@ -312,6 +332,7 @@ final class CameraModel {
             clearMoonOverlay()
             return
         }
+        scheduleChannelSplit(tint: moon.tint)
         let corrected = moon.corrected(
             azimuthOffset: alignment.azimuthOffsetRadians,
             altitudeOffset: alignment.altitudeOffsetRadians
@@ -319,6 +340,7 @@ final class CameraModel {
         guard MoonProjection.shouldDraw(
             altitude: corrected.altitude,
             angularRadius: corrected.angularRadius,
+            verticalScale: corrected.verticalScale,
             drawBelowHorizon: alignment.drawMoonBelowHorizon,
             calibrating: isCalibrating
         ) else {
@@ -332,7 +354,11 @@ final class CameraModel {
             angularRadius: corrected.angularRadius,
             axisPositionAngle: corrected.axisPositionAngle,
             pose: pose,
-            imageSize: previewSize
+            imageSize: previewSize,
+            verticalScale: corrected.verticalScale,
+            tint: corrected.tint,
+            redDispersion: corrected.redDispersion,
+            blueDispersion: corrected.blueDispersion
         )
         if isCalibrating {
             moonGuide = nil
@@ -343,7 +369,11 @@ final class CameraModel {
                 angularRadius: corrected.angularRadius,
                 axisPositionAngle: corrected.axisPositionAngle,
                 pose: pose,
-                imageSize: previewSize
+                imageSize: previewSize,
+                verticalScale: corrected.verticalScale,
+                tint: corrected.tint,
+                redDispersion: corrected.redDispersion,
+                blueDispersion: corrected.blueDispersion
             )
         }
     }
@@ -367,30 +397,99 @@ final class CameraModel {
         requestedSpriteKey = key
         guard key != spriteKey, !renderingSprite, let albedo else { return }
         renderingSprite = true
+        captureSprite = nil
         let phaseAngle = simulatePhase ? state.phaseAngle : 0
+        let earthshine = simulatePhase ? state.earthshine : 0
         let brightLimb = state.brightLimbPositionAngle
         let axis = state.axisPositionAngle
         let librationLongitude = state.librationLongitude
         let librationLatitude = state.librationLatitude
+        let tint = state.tint
+        let previewSize = Self.previewSpriteSize
+        let captureSize = Self.captureSpriteSize
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let image = MoonImageRenderer.render(
+            let preview = MoonImageRenderer.render(
                 albedo: albedo,
                 phaseAngle: phaseAngle,
                 brightLimbPositionAngle: brightLimb,
                 axisPositionAngle: axis,
                 librationLongitude: librationLongitude,
                 librationLatitude: librationLatitude,
-                size: 2048
+                earthshine: earthshine,
+                size: previewSize
             )
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.renderingSprite = false
-                if self.requestedSpriteKey == key {
-                    self.sprite = image
-                    self.spriteKey = key
+                guard self.requestedSpriteKey == key else {
+                    self.renderingSprite = false
+                    if let moon = self.moon {
+                        self.updateSprite(for: moon)
+                    }
+                    return
                 }
-                if let moon = self.moon {
-                    self.updateSprite(for: moon)
+                self.sprite = preview
+                self.spriteKey = key
+                self.previewSpriteToken &+= 1
+                self.scheduleChannelSplit(tint: tint)
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    let capture = MoonImageRenderer.render(
+                        albedo: albedo,
+                        phaseAngle: phaseAngle,
+                        brightLimbPositionAngle: brightLimb,
+                        axisPositionAngle: axis,
+                        librationLongitude: librationLongitude,
+                        librationLatitude: librationLatitude,
+                        earthshine: earthshine,
+                        size: captureSize
+                    )
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if self.requestedSpriteKey == key {
+                            self.captureSprite = capture
+                        }
+                        self.renderingSprite = false
+                        if let moon = self.moon {
+                            self.updateSprite(for: moon)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func ingest(_ attitude: DeviceAttitude) {
+        pendingAttitude = attitude
+        guard !attitudeRefreshScheduled else { return }
+        attitudeRefreshScheduled = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.attitudeRefreshScheduled = false
+            guard let attitude = self.pendingAttitude else { return }
+            self.pendingAttitude = nil
+            self.attitude = attitude
+            self.refreshOverlay()
+        }
+    }
+
+    private func scheduleChannelSplit(tint: MoonTint) {
+        guard let sprite else { return }
+        let key = ChannelKey(token: previewSpriteToken, tint: tint)
+        requestedChannelKey = key
+        guard key != channelKey, !splittingChannels else { return }
+        splittingChannels = true
+        let source = sprite
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let images = MoonCompositor.channelImages(sprite: source, tint: tint)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.splittingChannels = false
+                if self.requestedChannelKey == key {
+                    if let images {
+                        self.previewChannels = images
+                    }
+                    self.channelKey = key
+                } else if let tint = self.moon?.tint {
+                    self.scheduleChannelSplit(tint: tint)
                 }
             }
         }
@@ -427,6 +526,7 @@ final class CameraModel {
         guard MoonProjection.shouldDraw(
             altitude: frozen.moon.altitude,
             angularRadius: frozen.moon.angularRadius,
+            verticalScale: frozen.moon.verticalScale,
             drawBelowHorizon: frozen.drawBelowHorizon,
             calibrating: frozen.calibrating
         ) else { return upright }
@@ -436,13 +536,22 @@ final class CameraModel {
             angularRadius: frozen.moon.angularRadius,
             axisPositionAngle: frozen.moon.axisPositionAngle,
             pose: pose,
-            imageSize: pixelSize
+            imageSize: pixelSize,
+            verticalScale: frozen.moon.verticalScale,
+            tint: frozen.moon.tint,
+            redDispersion: frozen.moon.redDispersion,
+            blueDispersion: frozen.moon.blueDispersion
         ), let composited = MoonCompositor.composite(
             base: base,
             sprite: sprite,
             center: placement.center,
             pixelRadius: placement.pixelRadius,
-            rotation: placement.rotation
+            rotation: placement.rotation,
+            verticalScale: placement.verticalScale,
+            zenithRotation: placement.zenithRotation,
+            tint: placement.tint,
+            redDispersion: placement.redDispersion,
+            blueDispersion: placement.blueDispersion
         ) else { return upright }
         return UIImage(cgImage: composited, scale: upright.scale, orientation: .up)
     }
@@ -458,12 +567,32 @@ private struct FrozenFrame {
     var location: CLLocation?
 }
 
+private struct ChannelKey: Equatable {
+    var token: Int
+    var red: Int
+    var green: Int
+    var blue: Int
+
+    init(token: Int, tint: MoonTint) {
+        self.token = token
+        red = Self.quantize(tint.red)
+        green = Self.quantize(tint.green)
+        blue = Self.quantize(tint.blue)
+    }
+
+    private static func quantize(_ value: Double) -> Int {
+        guard value.isFinite else { return 25_500 }
+        return Int(min(25_500, max(0, (value * 100).rounded())))
+    }
+}
+
 private struct SpriteKey: Equatable {
     var phase: Int
     var limb: Int
     var axis: Int
     var librationLongitude: Int
     var librationLatitude: Int
+    var earthshine: Int
     var simulatePhase: Bool
 
     init(_ state: MoonState, simulatePhase: Bool) {
@@ -473,6 +602,7 @@ private struct SpriteKey: Equatable {
         axis = Int((state.axisPositionAngle * 180 / .pi) * 2)
         librationLongitude = Int((state.librationLongitude * 180 / .pi) * 2)
         librationLatitude = Int((state.librationLatitude * 180 / .pi) * 2)
+        earthshine = simulatePhase ? Int((state.earthshine * 20).rounded()) : 0
         self.simulatePhase = simulatePhase
     }
 }
