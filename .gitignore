@@ -1,0 +1,51 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Xcode 用户状态（含本机用户名、窗口布局，每人各自生成）
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# 构建产物
+build/
+DerivedData/
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+*.hmap
+*.ipa
+*.dSYM
+*.dSYM.zip
+
+# Swift Package Manager 本地缓存（Package.resolved 仍应提交）
+.swiftpm/
+.build/
+
+# Apple 签名材料与 App Store Connect API 密钥
+# 证书和私钥通常在钥匙串里，不在工程目录；一旦导出到仓库则必须忽略
+*.p12
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+*.pem
+*.key
+*.p8
+AuthKey_*.p8
+
+# 本地环境变量
+.env
+.env.*
+!.env.example
