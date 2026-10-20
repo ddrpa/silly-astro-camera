@@ -45,6 +45,18 @@ enum MoonLogicTests {
         expect(abs(paris.librationLatitude) < SkyAngles.radians(fromDegrees: 12), "天平动纬度 \(paris.librationLatitude)")
         expect(paris.axisPositionAngle.isFinite, "月轴方位角无效")
         expect(paris.illuminatedFraction >= 0 && paris.illuminatedFraction <= 1, "亮面比例越界")
+        let geometric = MoonEphemeris.state(
+            at: meeusDate,
+            latitudeDegrees: 48.836,
+            longitudeDegrees: 2.337,
+            altitudeMeters: 0,
+            applyAtmosphere: false
+        )
+        expect(geometric.azimuth == paris.azimuth, "关闭大气不应改方位")
+        expect(geometric.altitude <= paris.altitude + 1e-12, "几何高度不应高于视高度")
+        expect(geometric.verticalScale == 1, "关闭大气时竖直缩放应为 1")
+        expect(geometric.tint == .neutral, "关闭大气时颜色应为中性")
+        expect(geometric.redDispersion == 0 && geometric.blueDispersion == 0, "关闭大气时不应有色散")
 
         components.year = 2026
         components.month = 1
@@ -276,19 +288,23 @@ enum MoonLogicTests {
         let defaults = UserDefaults(suiteName: suiteName)!
         let store = AlignmentStore(defaults: defaults)
         expect(store.simulateMoonPhase, "月相模拟默认开启")
+        expect(store.simulateAtmosphere, "大气模拟默认开启")
         store.azimuthOffsetDegrees = 3
         store.altitudeOffsetDegrees = -1
         store.drawMoonBelowHorizon = true
         store.simulateMoonPhase = false
+        store.simulateAtmosphere = false
         let reloaded = AlignmentStore(defaults: defaults)
         expect(abs(reloaded.azimuthOffsetDegrees - 3) < 1e-9, "方位偏移未保存")
         expect(abs(reloaded.altitudeOffsetDegrees - (-1)) < 1e-9, "高度偏移未保存")
         expect(reloaded.drawMoonBelowHorizon, "地平线开关未保存")
         expect(!reloaded.simulateMoonPhase, "月相模拟开关未保存")
+        expect(!reloaded.simulateAtmosphere, "大气模拟开关未保存")
         reloaded.resetAlignment()
         expect(reloaded.azimuthOffsetDegrees == 0 && reloaded.altitudeOffsetDegrees == 0, "重置后偏移应为 0")
         expect(reloaded.drawMoonBelowHorizon, "重置不应关掉地平线开关")
         expect(!reloaded.simulateMoonPhase, "重置不应改月相模拟开关")
+        expect(!reloaded.simulateAtmosphere, "重置不应改大气模拟开关")
         defaults.removePersistentDomain(forName: suiteName)
 
         let facingNorth = AttitudeMatrix(

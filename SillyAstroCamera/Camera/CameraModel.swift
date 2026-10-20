@@ -107,6 +107,10 @@ final class CameraModel {
         refreshOverlay()
     }
 
+    func reloadMoon() {
+        refreshMoon()
+    }
+
     func setDisplayZoom(_ zoom: Double) {
         session.setDisplayZoom(zoom)
     }
@@ -279,7 +283,8 @@ final class CameraModel {
             at: Date(),
             latitudeDegrees: latitude,
             longitudeDegrees: longitude,
-            altitudeMeters: attitude.altitudeMeters ?? 0
+            altitudeMeters: attitude.altitudeMeters ?? 0,
+            applyAtmosphere: alignment.simulateAtmosphere
         )
         uncorrectedMoon = state
         moon = state

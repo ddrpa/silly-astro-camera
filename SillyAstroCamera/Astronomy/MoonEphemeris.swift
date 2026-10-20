@@ -87,7 +87,8 @@ enum MoonEphemeris {
         latitudeDegrees: Double,
         longitudeDegrees: Double,
         altitudeMeters: Double,
-        aerosolOpticalDepth: Double = Atmosphere.clearAerosolOpticalDepth
+        aerosolOpticalDepth: Double = Atmosphere.clearAerosolOpticalDepth,
+        applyAtmosphere: Bool = true
     ) -> MoonState {
         let julian = julianDate(from: date)
         let centuries = (julian - 2_451_545.0) / 36_525
@@ -142,12 +143,14 @@ enum MoonEphemeris {
             SkyAngles.degrees(fromRadians: moon.longitude - sun.longitude)
         )
         let angularRadius = asin(moonRadiusKilometers / moon.distance)
-        let atmosphere = Atmosphere.appearance(
-            trueAltitude: horizontal.altitude,
-            angularRadius: angularRadius,
-            altitudeMeters: altitudeMeters,
-            aerosolOpticalDepth: aerosolOpticalDepth
-        )
+        let atmosphere = applyAtmosphere
+            ? Atmosphere.appearance(
+                trueAltitude: horizontal.altitude,
+                angularRadius: angularRadius,
+                altitudeMeters: altitudeMeters,
+                aerosolOpticalDepth: aerosolOpticalDepth
+            )
+            : nil
         let sunHourAngle = SkyAngles.wrapPi(
             SkyAngles.radians(fromDegrees: sidereal) + longitude - sunEquatorial.rightAscension
         )
@@ -159,7 +162,7 @@ enum MoonEphemeris {
         let earthshine = nightSkyWeight(sunAltitude: sunAltitude) * (1 - cos(phase.phaseAngle)) / 2
         return MoonState(
             azimuth: horizontal.azimuth,
-            altitude: atmosphere.apparentAltitude,
+            altitude: atmosphere?.apparentAltitude ?? horizontal.altitude,
             angularRadius: angularRadius,
             illuminatedFraction: (1 + cos(phase.phaseAngle)) / 2,
             phaseAngle: phase.phaseAngle,
@@ -169,10 +172,10 @@ enum MoonEphemeris {
             librationLatitude: orientation.librationLatitude,
             distanceKilometers: moon.distance,
             waxing: elongation < 180,
-            verticalScale: atmosphere.verticalScale,
-            tint: atmosphere.tint,
-            redDispersion: atmosphere.redDispersion,
-            blueDispersion: atmosphere.blueDispersion,
+            verticalScale: atmosphere?.verticalScale ?? 1,
+            tint: atmosphere?.tint ?? .neutral,
+            redDispersion: atmosphere?.redDispersion ?? 0,
+            blueDispersion: atmosphere?.blueDispersion ?? 0,
             earthshine: earthshine
         )
     }

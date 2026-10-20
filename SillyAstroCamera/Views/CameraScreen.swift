@@ -146,6 +146,14 @@ struct CameraScreen: View {
                     alignment.simulateMoonPhase.toggle()
                     model.refreshDisplayedMoon()
                 }
+                iconToggle(
+                    image: "Atmosphere",
+                    label: "大气模拟",
+                    isOn: alignment.simulateAtmosphere
+                ) {
+                    alignment.simulateAtmosphere.toggle()
+                    model.reloadMoon()
+                }
                 Spacer()
             }
             HStack(spacing: 18) {
