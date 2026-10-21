@@ -371,6 +371,8 @@ enum MoonLogicTests {
         expectAtmosphere(expect)
         try expectMoonImage(expect)
         try expectComposite(expect)
+        expectMetering(expect)
+        expectCover(expect)
 
         if !failures.isEmpty {
             throw TestFailure(message: failures.joined(separator: "\n"))
@@ -521,6 +523,99 @@ enum MoonLogicTests {
         expect(greenChannel.green == 100 && greenChannel.red == 0 && greenChannel.blue == 0, "绿通道应只保留绿色，实际 \(greenChannel)")
         expect(blueChannel.blue == 0 && blueChannel.red == 0 && blueChannel.green == 0, "蓝增益为 0 时应清空蓝色，实际 \(blueChannel)")
         expect(alpha(channels.red, x: 0, y: 0) == 180, "通道图应保留原来的 alpha")
+
+        guard let white = solidImage(width: 21, height: 21, red: 255, green: 255, blue: 255, alpha: 255),
+              let covered = MoonCompositor.composite(
+                base: white,
+                sprite: sprite,
+                center: CGPoint(x: 10, y: 10),
+                pixelRadius: 2.5,
+                rotation: 0
+              ) else {
+            expect(false, "白底覆盖合成失败")
+            return
+        }
+        let inside = pixel(covered, x: 8, y: 10)
+        let outside = pixel(covered, x: 0, y: 0)
+        expect(inside.red == 0 && inside.green == 0 && inside.blue == 0, "视圆内应盖成不透明黑，实际 \(inside)")
+        expect(outside.red == 255 && outside.green == 255 && outside.blue == 255, "视圆外应保留景物，实际 \(outside)")
+    }
+
+    private static func expectMetering(_ expect: (Bool, String) -> Void) {
+        let size = CGSize(width: 100, height: 200)
+        let upper = SceneMetering.previewRectangle(moonCenter: CGPoint(x: 50, y: 40), previewSize: size)
+        let lower = SceneMetering.previewRectangle(moonCenter: CGPoint(x: 50, y: 160), previewSize: size)
+        let missing = SceneMetering.previewRectangle(moonCenter: nil, previewSize: size)
+        expect(upper.minY > 100, "月亮在上半幅时测光应在下沿，实际 \(upper)")
+        expect(lower.maxY < 100, "月亮在下半幅时测光应在上沿，实际 \(lower)")
+        expect(missing.width == 100 && missing.height == 200, "月亮出画应全幅测光")
+
+        let grown = SceneMetering.clampedDeviceRect(
+            from: [
+                CGPoint(x: 0.4, y: 0.4),
+                CGPoint(x: 0.42, y: 0.4),
+                CGPoint(x: 0.42, y: 0.42),
+                CGPoint(x: 0.4, y: 0.42),
+            ],
+            minimumSize: CGSize(width: 0.2, height: 0.2)
+        )
+        expect(grown.width >= 0.2 && grown.height >= 0.2, "测光矩形应达到最小尺寸，实际 \(grown)")
+        expect(grown.minX >= 0 && grown.maxX <= 1 && grown.minY >= 0 && grown.maxY <= 1, "测光矩形应留在画面内")
+    }
+
+    private static func expectCover(_ expect: (Bool, String) -> Void) {
+        let width = 40
+        let height = 40
+        var sky = [UInt8](repeating: 8, count: width * height)
+        fillDisk(&sky, width: width, centerX: 20, centerY: 20, radius: 6, value: 250)
+        let aligned = MoonCover.measure(
+            luminance: sky,
+            width: width,
+            height: height,
+            geometricCenter: CGPoint(x: 20, y: 20),
+            geometricRadius: 3
+        )
+        expect(aligned != nil, "与几何圆重叠的亮块应给出视圆")
+        if let aligned {
+            expect(aligned.radius > 6 && aligned.radius <= 12, "视半径应包住光晕并限制在 4 倍内，实际 \(aligned.radius)")
+            expect(hypot(aligned.center.x - 20, aligned.center.y - 20) < 1, "圆心应留在几何中心附近，实际 \(aligned.center)")
+        }
+
+        var offset = [UInt8](repeating: 8, count: width * height)
+        fillDisk(&offset, width: width, centerX: 34, centerY: 20, radius: 4, value: 250)
+        let missed = MoonCover.measure(
+            luminance: offset,
+            width: width,
+            height: height,
+            geometricCenter: CGPoint(x: 12, y: 20),
+            geometricRadius: 3
+        )
+        expect(missed == nil, "不与几何圆重叠的亮块应退回几何半径")
+
+        let sea = [UInt8](repeating: 250, count: width * height)
+        let flooded = MoonCover.measure(
+            luminance: sea,
+            width: width,
+            height: height,
+            geometricCenter: CGPoint(x: 20, y: 20),
+            geometricRadius: 3
+        )
+        expect(flooded == nil, "整片灯海应退回几何半径")
+
+        let smoothed = MoonCover.smooth(
+            previous: ApparentDisk(center: CGPoint(x: 0, y: 0), radius: 4),
+            measured: ApparentDisk(center: CGPoint(x: 10, y: 0), radius: 8)
+        )
+        expect(smoothed != nil && smoothed!.center.x > 0 && smoothed!.center.x < 10, "视圆应做指数平滑，实际 \(String(describing: smoothed))")
+        expect(MoonCover.smooth(previous: smoothed, measured: nil) == nil, "测量失败应立刻退回几何半径")
+    }
+
+    private static func fillDisk(_ pixels: inout [UInt8], width: Int, centerX: Int, centerY: Int, radius: Int, value: UInt8) {
+        for y in 0..<pixels.count / width {
+            for x in 0..<width where (x - centerX) * (x - centerX) + (y - centerY) * (y - centerY) <= radius * radius {
+                pixels[y * width + x] = value
+            }
+        }
     }
 
     private static func expectAtmosphere(_ expect: (Bool, String) -> Void) {

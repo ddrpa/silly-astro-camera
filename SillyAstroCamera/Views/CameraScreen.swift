@@ -100,9 +100,8 @@ struct CameraScreen: View {
             if let image = model.capturedImage {
                 CaptureResultView(
                     image: image,
-                    message: model.saveMessage,
                     onSave: { model.saveCapturedPhoto() },
-                    onRetake: { model.retake() }
+                    onDiscard: { model.discardCapturedPhoto() }
                 )
             }
         }
@@ -282,13 +281,18 @@ private struct MoonDiskOverlay: View {
 
     var body: some View {
         let diameter = placement.pixelRadius * 2
+        let cover = max(placement.coverRadius, placement.pixelRadius)
+            + max(abs(placement.redDispersion), abs(placement.blueDispersion))
         let relative = placement.rotation - placement.zenithRotation
         ZStack {
+            Circle()
+                .fill(.black)
+                .frame(width: cover * 2, height: cover * 2)
             channel(channels.red, shift: placement.redDispersion, diameter: diameter, relative: relative)
             channel(channels.green, shift: 0, diameter: diameter, relative: relative)
             channel(channels.blue, shift: placement.blueDispersion, diameter: diameter, relative: relative)
         }
-        .frame(width: diameter, height: diameter)
+        .frame(width: cover * 2, height: cover * 2)
         .compositingGroup()
     }
 

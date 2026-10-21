@@ -13,6 +13,7 @@ enum MoonCompositor {
         sprite: CGImage,
         center: CGPoint,
         pixelRadius: CGFloat,
+        coverRadius: CGFloat = 0,
         rotation: CGFloat,
         verticalScale: CGFloat = 1,
         zenithRotation: CGFloat = 0,
@@ -35,6 +36,8 @@ enum MoonCompositor {
         context.interpolationQuality = .none
         context.draw(base, in: bounds)
         let centerCG = CGPoint(x: center.x, y: CGFloat(height) - center.y)
+        let diskRadius = max(coverRadius, pixelRadius) + max(abs(redDispersion), abs(blueDispersion))
+        fillOpaqueDisk(in: context, center: centerCG, radius: diskRadius)
         let identity = abs(verticalScale - 1) < 1e-6
             && abs(zenithRotation) < 1e-6
             && abs(redDispersion) < 1e-4
@@ -102,6 +105,19 @@ enum MoonCompositor {
               let green = image(pixels: greenPixels, width: width, height: height),
               let blue = image(pixels: bluePixels, width: width, height: height) else { return nil }
         return MoonChannelImages(red: red, green: green, blue: blue)
+    }
+
+    private static func fillOpaqueDisk(in context: CGContext, center: CGPoint, radius: CGFloat) {
+        guard radius > 0 else { return }
+        context.saveGState()
+        context.setFillColor(red: 0, green: 0, blue: 0, alpha: 1)
+        context.fillEllipse(in: CGRect(
+            x: center.x - radius,
+            y: center.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        ))
+        context.restoreGState()
     }
 
     private static func drawSprite(

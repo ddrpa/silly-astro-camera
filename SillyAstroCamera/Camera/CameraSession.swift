@@ -1,19 +1,29 @@
 import AVFoundation
+import CoreMedia
 import UIKit
 
-final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate {
+final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate, AVCaptureVideoDataOutputSampleBufferDelegate {
     let session = AVCaptureSession()
     private let photoOutput = AVCapturePhotoOutput()
+    private let videoOutput = AVCaptureVideoDataOutput()
     private let sessionQueue = DispatchQueue(label: "silly-astro-camera.capture")
+    private let videoQueue = DispatchQueue(label: "silly-astro-camera.frames")
     private var device: AVCaptureDevice?
     private weak var previewLayer: AVCaptureVideoPreviewLayer?
     private var photoHandler: (@MainActor (UIImage?) -> Void)?
     private var configured = false
     private var exposureBias: Float = 0
     private var interfaceOrientation: UIInterfaceOrientation = .portrait
+    private var sceneMeterCorners: [CGPoint]?
+    private var appliedMeterRect: CGRect?
+    private var manualMetering = false
+    private var coverTarget: CoverTarget?
+    private var lastAnalysisSeconds = -1.0
+    private var sentEmptyCover = true
 
     var onConfigured: (@MainActor (String?) -> Void)?
     var onZoom: (@MainActor (Double) -> Void)?
+    var onApparentCover: (@MainActor (ApparentDisk?) -> Void)?
 
     func start() {
         sessionQueue.async { [weak self] in
@@ -57,6 +67,7 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate {
             self.configure(device) {
                 device.videoZoomFactor = deviceZoom
             }
+            self.appliedMeterRect = nil
             self.applyAutomaticExposure(on: device)
             self.publishZoom(device)
         }
@@ -79,6 +90,8 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate {
         let clamped = CGPoint(x: min(max(point.x, 0), 1), y: min(max(point.y, 0), 1))
         sessionQueue.async { [weak self] in
             guard let self, let device = self.device else { return }
+            self.manualMetering = true
+            self.appliedMeterRect = nil
             self.configure(device) {
                 if device.isFocusPointOfInterestSupported {
                     device.focusPointOfInterest = clamped
@@ -88,6 +101,48 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate {
                 }
             }
             self.applyAutomaticExposure(on: device)
+        }
+    }
+
+    func endManualMetering() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.manualMetering = false
+            self.appliedMeterRect = nil
+            guard let device = self.device else { return }
+            self.applyAutomaticExposure(on: device)
+        }
+    }
+
+    func meteringDeviceCorners(moonLayerPoint: CGPoint?) -> [CGPoint]? {
+        guard let layer = previewLayer, layer.bounds.width > 1, layer.bounds.height > 1 else { return nil }
+        let rect = SceneMetering.previewRectangle(moonCenter: moonLayerPoint, previewSize: layer.bounds.size)
+        return [
+            CGPoint(x: rect.minX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.minY),
+            CGPoint(x: rect.minX, y: rect.maxY),
+            CGPoint(x: rect.maxX, y: rect.maxY),
+        ].map { layer.captureDevicePointConverted(fromLayerPoint: $0) }
+    }
+
+    func updateSceneMetering(deviceCorners: [CGPoint]) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.sceneMeterCorners = deviceCorners
+            guard !self.manualMetering, let device = self.device else { return }
+            self.applyAutomaticExposure(on: device)
+        }
+    }
+
+    func setCoverTarget(center: CGPoint?, radius: CGFloat, previewSize: CGSize) {
+        videoQueue.async { [weak self] in
+            guard let self else { return }
+            guard let center, radius > 0, previewSize.width > 1, previewSize.height > 1 else {
+                self.coverTarget = nil
+                self.publishCover(nil)
+                return
+            }
+            self.coverTarget = CoverTarget(center: center, radius: radius, previewSize: previewSize)
         }
     }
 
@@ -155,6 +210,12 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate {
         }
         session.addInput(input)
         session.addOutput(photoOutput)
+        videoOutput.alwaysDiscardsLateVideoFrames = true
+        videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+        videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
+        if session.canAddOutput(videoOutput) {
+            session.addOutput(videoOutput)
+        }
         self.device = device
         configure(device) {
             if device.isGeometricDistortionCorrectionSupported {
@@ -180,11 +241,20 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate {
         if let connection = photoOutput.connection(with: .video), connection.isVideoRotationAngleSupported(angle) {
             connection.videoRotationAngle = angle
         }
+        if let connection = videoOutput.connection(with: .video), connection.isVideoRotationAngleSupported(angle) {
+            connection.videoRotationAngle = angle
+        }
         guard let device else { return }
         let aspect: AVCaptureDevice.AspectRatio = orientation.isPortrait ? .ratio3x4 : .ratio4x3
         guard device.activeFormat.supportedDynamicAspectRatios.contains(aspect) else { return }
         configure(device) {
-            device.setDynamicAspectRatio(aspect) { _, _ in }
+            device.setDynamicAspectRatio(aspect) { [weak self] _, _ in
+                self?.sessionQueue.async {
+                    guard let self, let device = self.device else { return }
+                    self.appliedMeterRect = nil
+                    self.applyAutomaticExposure(on: device)
+                }
+            }
         }
     }
 
@@ -193,17 +263,58 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate {
             if device.isFocusModeSupported(.continuousAutoFocus) {
                 device.focusMode = .continuousAutoFocus
             }
-            if device.isExposureModeSupported(.continuousAutoExposure) {
-                device.exposureMode = .continuousAutoExposure
-            }
             if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
                 device.whiteBalanceMode = .continuousAutoWhiteBalance
             }
             if device.isLowLightBoostSupported {
                 device.automaticallyEnablesLowLightBoostWhenAvailable = true
             }
+            if !self.manualMetering, device.isExposureRectOfInterestSupported, let corners = self.sceneMeterCorners {
+                let rect = SceneMetering.clampedDeviceRect(
+                    from: corners,
+                    minimumSize: device.minExposureRectOfInterestSize
+                )
+                if self.appliedMeterRect != rect {
+                    device.exposureRectOfInterest = rect
+                    self.appliedMeterRect = rect
+                }
+            }
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
             let bias = min(max(self.exposureBias, device.minExposureTargetBias), device.maxExposureTargetBias)
             device.setExposureTargetBias(bias, completionHandler: nil)
+        }
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        let seconds = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+        if seconds.isFinite, lastAnalysisSeconds >= 0, seconds - lastAnalysisSeconds < 0.12 { return }
+        if seconds.isFinite { lastAnalysisSeconds = seconds }
+        guard let target = coverTarget else {
+            publishCover(nil)
+            return
+        }
+        guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let disk = MoonCover.measure(
+            pixelBuffer: buffer,
+            previewCenter: target.center,
+            previewRadius: target.radius,
+            previewSize: target.previewSize
+        )
+        publishCover(disk)
+    }
+
+    private func publishCover(_ disk: ApparentDisk?) {
+        if disk == nil {
+            guard !sentEmptyCover else { return }
+            sentEmptyCover = true
+        } else {
+            sentEmptyCover = false
+        }
+        let callback = onApparentCover
+        Task { @MainActor in
+            callback?(disk)
         }
     }
 
@@ -261,6 +372,12 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate {
         default:
             return 90
         }
+    }
+
+    private struct CoverTarget {
+        var center: CGPoint
+        var radius: CGFloat
+        var previewSize: CGSize
     }
 
     private static func backCamera() -> AVCaptureDevice? {

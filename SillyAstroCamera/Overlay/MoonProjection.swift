@@ -36,6 +36,7 @@ struct CameraPose: Equatable {
 struct MoonPlacement: Equatable {
     var center: CGPoint
     var pixelRadius: CGFloat
+    var coverRadius: CGFloat = 0
     var rotation: CGFloat
     var verticalScale: CGFloat
     var zenithRotation: CGFloat

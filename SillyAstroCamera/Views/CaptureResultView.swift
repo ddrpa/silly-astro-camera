@@ -2,9 +2,10 @@ import SwiftUI
 
 struct CaptureResultView: View {
     let image: UIImage
-    let message: String?
     let onSave: () -> Void
-    let onRetake: () -> Void
+    let onDiscard: () -> Void
+
+    @State private var didChoose = false
 
     var body: some View {
         ZStack {
@@ -14,22 +15,22 @@ struct CaptureResultView: View {
                 .scaledToFit()
             VStack {
                 Spacer()
-                if let message {
-                    Text(message)
-                        .font(.footnote)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(.black.opacity(0.55), in: Capsule())
-                }
                 HStack(spacing: 28) {
-                    Button("重拍", action: onRetake)
-                    Button("保存", action: onSave)
+                    Button("丢弃") { choose(onDiscard) }
+                    Button("保存") { choose(onSave) }
                 }
                 .font(.headline)
                 .buttonStyle(.borderedProminent)
+                .disabled(didChoose)
                 .padding(.bottom, 28)
             }
         }
         .foregroundStyle(.white)
+    }
+
+    private func choose(_ action: () -> Void) {
+        guard !didChoose else { return }
+        didChoose = true
+        action()
     }
 }

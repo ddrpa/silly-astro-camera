@@ -26,7 +26,6 @@ final class CameraModel {
     var meteringPoint: CGPoint?
     var capturedImage: UIImage?
     var showResult = false
-    var saveMessage: String?
 
     private var moon: MoonState?
     private var uncorrectedMoon: MoonState?
@@ -48,6 +47,10 @@ final class CameraModel {
     private var ephemerisTimer: Timer?
     private var pinchOrigin: Double?
     private var frozen: FrozenFrame?
+    private var geometricPlacement: MoonPlacement?
+    private var coverCenter: CGPoint?
+    private var coverRadius: CGFloat?
+    private var meteringCorners: [CGPoint]?
 
     private static let previewSpriteSize = 512
     private static let captureSpriteSize = 2048
@@ -64,6 +67,9 @@ final class CameraModel {
         session.onZoom = { [weak self] zoom in
             self?.displayZoom = zoom
             self?.refreshOverlay()
+        }
+        session.onApparentCover = { [weak self] disk in
+            self?.applyApparentCover(disk)
         }
         orientationService.onUpdate = { [weak self] attitude in
             self?.ingest(attitude)
@@ -144,6 +150,7 @@ final class CameraModel {
             try? await Task.sleep(for: .seconds(1))
             if meteringPoint == point {
                 meteringPoint = nil
+                session.endManualMetering()
             }
         }
     }
@@ -151,11 +158,15 @@ final class CameraModel {
     func beginCalibration() {
         isCalibrating = true
         calibrationCenter = nil
+        coverCenter = nil
+        coverRadius = nil
+        meteringCorners = nil
         refreshOverlay()
     }
 
     func dragCalibration(to point: CGPoint) {
         calibrationCenter = point
+        publishSceneMetering()
     }
 
     func endCalibration(at point: CGPoint) {
@@ -178,6 +189,9 @@ final class CameraModel {
     func finishCalibration() {
         isCalibrating = false
         calibrationCenter = nil
+        coverCenter = nil
+        coverRadius = nil
+        meteringCorners = nil
         refreshOverlay()
     }
 
@@ -208,7 +222,10 @@ final class CameraModel {
                     return nil
                 }
                 return CLLocation(latitude: latitude, longitude: longitude)
-            }
+            },
+            coverCenter: isCalibrating ? nil : coverCenter,
+            coverRadius: isCalibrating ? nil : coverRadius,
+            previewSize: previewSize
         )
         session.capture { [weak self] image in
             self?.finishCapture(image)
@@ -216,13 +233,15 @@ final class CameraModel {
     }
 
     func saveCapturedPhoto() {
-        guard let capturedImage else { return }
+        guard let image = capturedImage else { return }
         let location = frozen?.location
-        let imageData = capturedImage.jpegData(compressionQuality: 0.95)
+        let imageData = image.jpegData(compressionQuality: 0.95)
+        showResult = false
+        capturedImage = nil
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
             guard status == .authorized || status == .limited else {
                 Task { @MainActor [weak self] in
-                    self?.saveMessage = "没有相册权限"
+                    self?.statusMessage = "没有相册权限"
                 }
                 return
             }
@@ -234,16 +253,15 @@ final class CameraModel {
                 request.location = location
             } completionHandler: { [weak self] success, _ in
                 Task { @MainActor [weak self] in
-                    self?.saveMessage = success ? "已保存到相册" : "保存失败"
+                    self?.statusMessage = success ? "已保存到相册" : "保存失败"
                 }
             }
         }
     }
 
-    func retake() {
+    func discardCapturedPhoto() {
         showResult = false
         capturedImage = nil
-        saveMessage = nil
     }
 
     var overlayPlacement: MoonPlacement? {
@@ -353,7 +371,7 @@ final class CameraModel {
             return
         }
         horizonMessage = nil
-        placement = MoonProjection.project(
+        geometricPlacement = MoonProjection.project(
             azimuth: corrected.azimuth,
             altitude: corrected.altitude,
             angularRadius: corrected.angularRadius,
@@ -365,6 +383,13 @@ final class CameraModel {
             redDispersion: corrected.redDispersion,
             blueDispersion: corrected.blueDispersion
         )
+        if geometricPlacement == nil {
+            coverCenter = nil
+            coverRadius = nil
+        }
+        placement = geometricPlacement.map { displayed(from: $0) }
+        publishCoverTarget()
+        publishSceneMetering()
         if isCalibrating {
             moonGuide = nil
         } else {
@@ -385,8 +410,64 @@ final class CameraModel {
 
     private func clearMoonOverlay(horizon: String? = nil) {
         placement = nil
+        geometricPlacement = nil
+        coverCenter = nil
+        coverRadius = nil
         moonGuide = nil
         horizonMessage = horizon
+        session.setCoverTarget(center: nil, radius: 0, previewSize: previewSize)
+        publishSceneMetering()
+    }
+
+    private func displayed(from geometric: MoonPlacement) -> MoonPlacement {
+        guard !isCalibrating, let coverCenter, let coverRadius else { return geometric }
+        var copy = geometric
+        copy.center = coverCenter
+        copy.coverRadius = coverRadius
+        return copy
+    }
+
+    private func applyApparentCover(_ disk: ApparentDisk?) {
+        guard !isCalibrating, let geometricPlacement else { return }
+        let smoothed = MoonCover.smooth(
+            previous: coverCenter.flatMap { center in
+                coverRadius.map { ApparentDisk(center: center, radius: $0) }
+            },
+            measured: disk
+        )
+        coverCenter = smoothed?.center
+        coverRadius = smoothed?.radius
+        placement = displayed(from: geometricPlacement)
+    }
+
+    private func publishCoverTarget() {
+        guard !isCalibrating, let geometricPlacement else {
+            session.setCoverTarget(center: nil, radius: 0, previewSize: previewSize)
+            return
+        }
+        session.setCoverTarget(
+            center: geometricPlacement.center,
+            radius: geometricPlacement.pixelRadius,
+            previewSize: previewSize
+        )
+    }
+
+    private func publishSceneMetering() {
+        let moonPoint: CGPoint?
+        if isCalibrating {
+            moonPoint = calibrationCenter ?? geometricPlacement?.center
+        } else {
+            moonPoint = geometricPlacement?.center
+        }
+        guard let corners = session.meteringDeviceCorners(moonLayerPoint: moonPoint) else { return }
+        guard !sameCorners(corners, meteringCorners) else { return }
+        meteringCorners = corners
+        session.updateSceneMetering(deviceCorners: corners)
+    }
+
+    private func sameCorners(_ lhs: [CGPoint], _ rhs: [CGPoint]?) -> Bool {
+        guard let rhs, lhs.count == rhs.count else { return false }
+        return zip(lhs, rhs).allSatisfy { abs($0.x - $1.x) < 0.004 && abs($0.y - $1.y) < 0.004 }
     }
 
     private var fallbackRadius: CGFloat {
@@ -535,7 +616,7 @@ final class CameraModel {
             drawBelowHorizon: frozen.drawBelowHorizon,
             calibrating: frozen.calibrating
         ) else { return upright }
-        guard let placement = MoonProjection.project(
+        guard var placement = MoonProjection.project(
             azimuth: frozen.moon.azimuth,
             altitude: frozen.moon.altitude,
             angularRadius: frozen.moon.angularRadius,
@@ -546,11 +627,22 @@ final class CameraModel {
             tint: frozen.moon.tint,
             redDispersion: frozen.moon.redDispersion,
             blueDispersion: frozen.moon.blueDispersion
-        ), let composited = MoonCompositor.composite(
+        ) else { return upright }
+        if let coverCenter = frozen.coverCenter,
+           let coverRadius = frozen.coverRadius,
+           frozen.previewSize.width > 1,
+           frozen.previewSize.height > 1 {
+            let scaleX = pixelSize.width / frozen.previewSize.width
+            let scaleY = pixelSize.height / frozen.previewSize.height
+            placement.center = CGPoint(x: coverCenter.x * scaleX, y: coverCenter.y * scaleY)
+            placement.coverRadius = coverRadius * (scaleX + scaleY) / 2
+        }
+        guard let composited = MoonCompositor.composite(
             base: base,
             sprite: sprite,
             center: placement.center,
             pixelRadius: placement.pixelRadius,
+            coverRadius: placement.coverRadius,
             rotation: placement.rotation,
             verticalScale: placement.verticalScale,
             zenithRotation: placement.zenithRotation,
@@ -570,6 +662,9 @@ private struct FrozenFrame {
     var calibrating: Bool
     var sprite: CGImage?
     var location: CLLocation?
+    var coverCenter: CGPoint?
+    var coverRadius: CGFloat?
+    var previewSize: CGSize
 }
 
 private struct ChannelKey: Equatable {
