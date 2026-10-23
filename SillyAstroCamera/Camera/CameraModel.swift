@@ -17,15 +17,18 @@ final class CameraModel {
     var moonGuide: MoonGuide?
     var horizonMessage: String?
     var sprite: CGImage?
-    var previewChannels: MoonChannelImages?
     var statusMessage: String?
-    var isCalibrating = false
-    var calibrationCenter: CGPoint?
     var exposureBias = 0.0
     var exposureRange: ClosedRange<Double> = -2...2
     var meteringPoint: CGPoint?
     var capturedImage: UIImage?
+    var capturedBaseImage: UIImage?
     var showResult = false
+    var isAdjustingCapture = false
+    var resultReady = false
+    var resultSprite: CGImage?
+    var resultPlacement: MoonPlacement?
+    var resultPixelSize: CGSize = .zero
 
     private var moon: MoonState?
     private var uncorrectedMoon: MoonState?
@@ -34,14 +37,9 @@ final class CameraModel {
     private var screenOrientation: ScreenOrientation = .portrait
     private var attitude: DeviceAttitude?
     private var albedo: MoonAlbedo?
-    private var spriteKey: SpriteKey?
-    private var requestedSpriteKey: SpriteKey?
+    private var previewKey: PreviewSpriteKey?
+    private var requestedPreviewKey: PreviewSpriteKey?
     private var renderingSprite = false
-    private var captureSprite: CGImage?
-    private var previewSpriteToken = 0
-    private var channelKey: ChannelKey?
-    private var requestedChannelKey: ChannelKey?
-    private var splittingChannels = false
     private var pendingAttitude: DeviceAttitude?
     private var attitudeRefreshScheduled = false
     private var ephemerisTimer: Timer?
@@ -50,7 +48,14 @@ final class CameraModel {
     private var geometricPlacement: MoonPlacement?
     private var coverCenter: CGPoint?
     private var coverRadius: CGFloat?
+    private var trackPreferenceOffset: CGPoint?
+    private var trackMissStarted: Date?
     private var meteringCorners: [CGPoint]?
+    private var lastTrackingTargetCenter: CGPoint?
+    private var lastTrackingTargetRadius: CGFloat?
+    private var captureRenderGeneration = 0
+    private var captureSpriteKey: CaptureSpriteKey?
+    private var resultGlow: GlowCover?
 
     private static let previewSpriteSize = 512
     private static let captureSpriteSize = 2048
@@ -68,8 +73,8 @@ final class CameraModel {
             self?.displayZoom = zoom
             self?.refreshOverlay()
         }
-        session.onApparentCover = { [weak self] disk in
-            self?.applyApparentCover(disk)
+        session.onApparentCover = { [weak self] measurement in
+            self?.applyApparentCover(measurement)
         }
         orientationService.onUpdate = { [weak self] attitude in
             self?.ingest(attitude)
@@ -90,6 +95,7 @@ final class CameraModel {
                 self?.refreshMoon()
             }
         }
+        session.setVideoAnalysisEnabled(alignment.visualTrackingEnabled)
         refreshMoon()
     }
 
@@ -142,7 +148,6 @@ final class CameraModel {
     }
 
     func focus(at point: CGPoint, in view: PreviewView) {
-        guard !isCalibrating else { return }
         let devicePoint = view.previewLayer.captureDevicePointConverted(fromLayerPoint: point)
         session.focusAndExpose(atDevicePoint: devicePoint)
         meteringPoint = point
@@ -155,50 +160,82 @@ final class CameraModel {
         }
     }
 
-    func beginCalibration() {
-        isCalibrating = true
-        calibrationCenter = nil
-        coverCenter = nil
-        coverRadius = nil
-        meteringCorners = nil
+    func setVisualTracking(_ enabled: Bool) {
+        alignment.visualTrackingEnabled = enabled
+        clearTrackingLock()
+        trackPreferenceOffset = nil
+        lastTrackingTargetCenter = nil
+        lastTrackingTargetRadius = nil
+        session.setVideoAnalysisEnabled(enabled)
+        if !enabled {
+            session.setCoverTarget(nil)
+        }
         refreshOverlay()
     }
 
-    func dragCalibration(to point: CGPoint) {
-        calibrationCenter = point
-        publishSceneMetering()
+    func track(at point: CGPoint) {
+        guard alignment.visualTrackingEnabled, let geometricPlacement else { return }
+        trackPreferenceOffset = CGPoint(
+            x: point.x - geometricPlacement.center.x,
+            y: point.y - geometricPlacement.center.y
+        )
+        trackMissStarted = nil
+        publishCoverTarget(force: true)
     }
 
-    func endCalibration(at point: CGPoint) {
-        calibrationCenter = point
-        guard let pose, let uncorrectedMoon,
-              let sky = MoonProjection.unproject(point: point, pose: pose, imageSize: previewSize) else {
+    func resetResultAlignment() {
+        alignment.resetAlignment()
+        frozen?.useTrackedCenter = false
+        frozen?.trackedCenter = nil
+        isAdjustingCapture = false
+        refreshCaptureResult(remeasureGlow: true, rerenderSprite: false)
+    }
+
+    func setResultMoonPhase(_ enabled: Bool) {
+        guard alignment.simulateMoonPhase != enabled else { return }
+        alignment.simulateMoonPhase = enabled
+        refreshCaptureResult(remeasureGlow: false, rerenderSprite: true)
+    }
+
+    func setResultAtmosphere(_ enabled: Bool) {
+        guard alignment.simulateAtmosphere != enabled else { return }
+        alignment.simulateAtmosphere = enabled
+        refreshCaptureResult(remeasureGlow: false, rerenderSprite: false)
+    }
+
+    func beginCaptureDrag() {
+        guard resultPlacement != nil else { return }
+        isAdjustingCapture = true
+    }
+
+    func updateCaptureDrag(to imagePoint: CGPoint) {
+        guard isAdjustingCapture else { return }
+        resultPlacement?.center = clamped(imagePoint)
+    }
+
+    func endCaptureDrag(at imagePoint: CGPoint) {
+        guard isAdjustingCapture, var frame = frozen, resultPixelSize.width > 1 else {
+            isAdjustingCapture = false
             return
         }
-        let offset = MoonProjection.alignmentOffsetDegrees(
-            indicatedAzimuth: sky.azimuth,
-            indicatedAltitude: sky.altitude,
-            uncorrectedAzimuth: uncorrectedMoon.azimuth,
-            uncorrectedAltitude: uncorrectedMoon.altitude
-        )
-        alignment.azimuthOffsetDegrees = offset.azimuth
-        alignment.altitudeOffsetDegrees = offset.altitude
-        refreshOverlay()
-    }
-
-    func finishCalibration() {
-        isCalibrating = false
-        calibrationCenter = nil
-        coverCenter = nil
-        coverRadius = nil
-        meteringCorners = nil
-        refreshOverlay()
-    }
-
-    func resetAlignment() {
-        alignment.resetAlignment()
-        calibrationCenter = nil
-        refreshOverlay()
+        let point = clamped(imagePoint)
+        resultPlacement?.center = point
+        let pose = photoPose(frozen: frame, pixelSize: resultPixelSize)
+        if let sky = MoonProjection.unproject(point: point, pose: pose, imageSize: resultPixelSize) {
+            let offset = MoonProjection.alignmentOffsetDegrees(
+                indicatedAzimuth: sky.azimuth,
+                indicatedAltitude: sky.altitude,
+                uncorrectedAzimuth: frame.moon.azimuth,
+                uncorrectedAltitude: frame.moon.altitude
+            )
+            alignment.azimuthOffsetDegrees = offset.azimuth
+            alignment.altitudeOffsetDegrees = offset.altitude
+            frame.useTrackedCenter = false
+            frame.trackedCenter = nil
+            frozen = frame
+        }
+        isAdjustingCapture = false
+        refreshCaptureResult(remeasureGlow: true, rerenderSprite: false)
     }
 
     func shutter() {
@@ -206,25 +243,20 @@ final class CameraModel {
             captureWithoutMoon()
             return
         }
-        let corrected = moon.corrected(
-            azimuthOffset: alignment.azimuthOffsetRadians,
-            altitudeOffset: alignment.altitudeOffsetRadians
-        )
+        let tracked = alignment.visualTrackingEnabled ? coverCenter : nil
         frozen = FrozenFrame(
-            moon: corrected,
+            moon: moon,
             pose: pose,
             landscapeHorizontalFOV: session.optics()?.landscapeHorizontalFOV ?? pose.horizontalFOV,
             drawBelowHorizon: alignment.drawMoonBelowHorizon,
-            calibrating: isCalibrating,
-            sprite: captureSprite ?? sprite,
             location: attitude.flatMap { attitude in
                 guard let latitude = attitude.latitudeDegrees, let longitude = attitude.longitudeDegrees else {
                     return nil
                 }
                 return CLLocation(latitude: latitude, longitude: longitude)
             },
-            coverCenter: isCalibrating ? nil : coverCenter,
-            coverRadius: isCalibrating ? nil : coverRadius,
+            trackedCenter: tracked,
+            useTrackedCenter: tracked != nil,
             previewSize: previewSize
         )
         session.capture { [weak self] image in
@@ -260,37 +292,19 @@ final class CameraModel {
     }
 
     func discardCapturedPhoto() {
+        captureRenderGeneration &+= 1
         showResult = false
         capturedImage = nil
+        capturedBaseImage = nil
+        resultSprite = nil
+        resultPlacement = nil
+        resultGlow = nil
+        resultReady = false
+        isAdjustingCapture = false
     }
 
     var overlayPlacement: MoonPlacement? {
-        guard var placement else {
-            guard isCalibrating, previewSize.width > 0 else { return nil }
-            let fallbackPose = pose
-            return MoonPlacement(
-                center: calibrationCenter ?? CGPoint(x: previewSize.width / 2, y: previewSize.height / 2),
-                pixelRadius: fallbackRadius,
-                rotation: fallbackPose.map { MoonProjection.spriteRotation(pose: $0, axisPositionAngle: moon?.axisPositionAngle ?? 0) } ?? 0,
-                verticalScale: CGFloat(moon?.verticalScale ?? 1),
-                zenithRotation: fallbackPose.map { MoonProjection.zenithRotation(pose: $0) } ?? 0,
-                tint: moon?.tint ?? .neutral,
-                redDispersion: fallbackPose.map {
-                    MoonProjection.pixels(forAngle: moon?.redDispersion ?? 0, pose: $0, imageSize: previewSize)
-                } ?? 0,
-                blueDispersion: fallbackPose.map {
-                    MoonProjection.pixels(forAngle: moon?.blueDispersion ?? 0, pose: $0, imageSize: previewSize)
-                } ?? 0
-            )
-        }
-        if isCalibrating, let calibrationCenter {
-            placement.center = calibrationCenter
-        }
-        return placement
-    }
-
-    var calibrationReadout: String {
-        String(format: "方位 %+.1f°　高度 %+.1f°", alignment.azimuthOffsetDegrees, alignment.altitudeOffsetDegrees)
+        placement
     }
 
     private func refreshMoon() {
@@ -302,7 +316,7 @@ final class CameraModel {
             latitudeDegrees: latitude,
             longitudeDegrees: longitude,
             altitudeMeters: attitude.altitudeMeters ?? 0,
-            applyAtmosphere: alignment.simulateAtmosphere
+            applyAtmosphere: true
         )
         uncorrectedMoon = state
         moon = state
@@ -355,17 +369,16 @@ final class CameraModel {
             clearMoonOverlay()
             return
         }
-        scheduleChannelSplit(tint: moon.tint)
         let corrected = moon.corrected(
-            azimuthOffset: alignment.azimuthOffsetRadians,
-            altitudeOffset: alignment.altitudeOffsetRadians
+            azimuthOffset: activeAzimuthOffset,
+            altitudeOffset: activeAltitudeOffset
         )
         guard MoonProjection.shouldDraw(
             altitude: corrected.altitude,
             angularRadius: corrected.angularRadius,
             verticalScale: corrected.verticalScale,
             drawBelowHorizon: alignment.drawMoonBelowHorizon,
-            calibrating: isCalibrating
+            calibrating: false
         ) else {
             clearMoonOverlay(horizon: "月亮在地平线以下")
             return
@@ -378,87 +391,145 @@ final class CameraModel {
             axisPositionAngle: corrected.axisPositionAngle,
             pose: pose,
             imageSize: previewSize,
-            verticalScale: corrected.verticalScale,
-            tint: corrected.tint,
-            redDispersion: corrected.redDispersion,
-            blueDispersion: corrected.blueDispersion
+            verticalScale: corrected.verticalScale
         )
         if geometricPlacement == nil {
             coverCenter = nil
             coverRadius = nil
         }
-        placement = geometricPlacement.map { displayed(from: $0) }
-        publishCoverTarget()
+        if let geometricPlacement {
+            let next = displayed(from: geometricPlacement)
+            if placement == nil || placement!.visiblyDiffers(from: next) {
+                placement = next
+            }
+        } else if placement != nil {
+            placement = nil
+        }
+        publishCoverTarget(force: false)
         publishSceneMetering()
-        if isCalibrating {
-            moonGuide = nil
-        } else {
-            moonGuide = MoonProjection.offscreenGuide(
-                azimuth: corrected.azimuth,
-                altitude: corrected.altitude,
-                angularRadius: corrected.angularRadius,
-                axisPositionAngle: corrected.axisPositionAngle,
-                pose: pose,
-                imageSize: previewSize,
-                verticalScale: corrected.verticalScale,
-                tint: corrected.tint,
-                redDispersion: corrected.redDispersion,
-                blueDispersion: corrected.blueDispersion
-            )
+        let guide = MoonProjection.offscreenGuide(
+            azimuth: corrected.azimuth,
+            altitude: corrected.altitude,
+            angularRadius: corrected.angularRadius,
+            axisPositionAngle: corrected.axisPositionAngle,
+            pose: pose,
+            imageSize: previewSize,
+            verticalScale: corrected.verticalScale
+        )
+        if moonGuide != guide {
+            moonGuide = guide
         }
     }
 
-    private func clearMoonOverlay(horizon: String? = nil) {
-        placement = nil
-        geometricPlacement = nil
+    private var activeAzimuthOffset: Double {
+        alignment.azimuthOffsetRadians
+    }
+
+    private var activeAltitudeOffset: Double {
+        alignment.altitudeOffsetRadians
+    }
+
+    private func clearTrackingLock() {
+        trackMissStarted = nil
         coverCenter = nil
         coverRadius = nil
-        moonGuide = nil
-        horizonMessage = horizon
-        session.setCoverTarget(center: nil, radius: 0, previewSize: previewSize)
+    }
+
+    private func clearMoonOverlay(horizon: String? = nil) {
+        if placement != nil { placement = nil }
+        geometricPlacement = nil
+        clearTrackingLock()
+        if lastTrackingTargetCenter != nil || lastTrackingTargetRadius != nil {
+            lastTrackingTargetCenter = nil
+            lastTrackingTargetRadius = nil
+            session.setCoverTarget(nil)
+        }
+        if moonGuide != nil { moonGuide = nil }
+        if horizonMessage != horizon { horizonMessage = horizon }
         publishSceneMetering()
     }
 
     private func displayed(from geometric: MoonPlacement) -> MoonPlacement {
-        guard !isCalibrating, let coverCenter, let coverRadius else { return geometric }
         var copy = geometric
+        guard alignment.visualTrackingEnabled, let coverCenter else { return copy }
         copy.center = coverCenter
-        copy.coverRadius = coverRadius
         return copy
     }
 
-    private func applyApparentCover(_ disk: ApparentDisk?) {
-        guard !isCalibrating, let geometricPlacement else { return }
-        let smoothed = MoonCover.smooth(
-            previous: coverCenter.flatMap { center in
-                coverRadius.map { ApparentDisk(center: center, radius: $0) }
-            },
-            measured: disk
-        )
-        coverCenter = smoothed?.center
-        coverRadius = smoothed?.radius
-        placement = displayed(from: geometricPlacement)
+    private func applyApparentCover(_ measurement: CoverMeasurement?) {
+        guard let measurement else { return }
+        if alignment.visualTrackingEnabled, geometricPlacement != nil {
+            if let disk = measurement.disk {
+                trackMissStarted = nil
+                let smoothed = MoonCover.smooth(
+                    previous: coverCenter.flatMap { center in
+                        coverRadius.map { ApparentDisk(center: center, radius: $0) }
+                    },
+                    measured: disk
+                )
+                coverCenter = smoothed?.center
+                coverRadius = smoothed?.radius
+            } else if coverCenter != nil {
+                if trackMissStarted == nil {
+                    trackMissStarted = Date()
+                }
+                if let trackMissStarted, Date().timeIntervalSince(trackMissStarted) >= 1 {
+                    self.trackMissStarted = nil
+                    coverCenter = nil
+                    coverRadius = nil
+                }
+            }
+        }
+        guard let geometricPlacement else { return }
+        let next = displayed(from: geometricPlacement)
+        if placement == nil || placement!.visiblyDiffers(from: next) {
+            placement = next
+        }
     }
 
-    private func publishCoverTarget() {
-        guard !isCalibrating, let geometricPlacement else {
-            session.setCoverTarget(center: nil, radius: 0, previewSize: previewSize)
+    private func publishCoverTarget(force: Bool) {
+        guard alignment.visualTrackingEnabled, let geometricPlacement else {
+            if lastTrackingTargetCenter != nil || lastTrackingTargetRadius != nil {
+                lastTrackingTargetCenter = nil
+                lastTrackingTargetRadius = nil
+                session.setCoverTarget(nil)
+            }
             return
         }
-        session.setCoverTarget(
-            center: geometricPlacement.center,
-            radius: geometricPlacement.pixelRadius,
-            previewSize: previewSize
+        let centerMoved = MoonCover.shouldPublishTrackingTarget(
+            previous: lastTrackingTargetCenter,
+            center: geometricPlacement.center
         )
+        let radiusMoved = lastTrackingTargetRadius.map { abs(geometricPlacement.pixelRadius - $0) >= 1 } ?? true
+        guard force || centerMoved || radiusMoved else { return }
+        lastTrackingTargetCenter = geometricPlacement.center
+        lastTrackingTargetRadius = geometricPlacement.pixelRadius
+        let preferenceCenter = trackPreferenceOffset.map { offset in
+            CGPoint(x: geometricPlacement.center.x + offset.x, y: geometricPlacement.center.y + offset.y)
+        }
+        let wide = pose.map {
+            MoonProjection.pixels(
+                forAngle: SkyAngles.radians(fromDegrees: MoonCover.trackingSearchDegrees),
+                pose: $0,
+                imageSize: previewSize
+            )
+        } ?? 0
+        let searchRadius = max(geometricPlacement.pixelRadius * MoonCover.maxRadiusScale, wide)
+        session.setCoverTarget(CoverTarget(
+            geometricCenter: geometricPlacement.center,
+            geometricRadius: geometricPlacement.pixelRadius,
+            searchCenter: geometricPlacement.center,
+            searchRadius: max(searchRadius, 1),
+            preferenceCenter: preferenceCenter,
+            previewSize: previewSize,
+            acquire: true,
+            sampleColor: false
+        ))
     }
 
     private func publishSceneMetering() {
         let moonPoint: CGPoint?
-        if isCalibrating {
-            moonPoint = calibrationCenter ?? geometricPlacement?.center
-        } else {
-            moonPoint = geometricPlacement?.center
-        }
+        moonPoint = placement?.center ?? geometricPlacement?.center
         guard let corners = session.meteringDeviceCorners(moonLayerPoint: moonPoint) else { return }
         guard !sameCorners(corners, meteringCorners) else { return }
         meteringCorners = corners
@@ -470,75 +541,40 @@ final class CameraModel {
         return zip(lhs, rhs).allSatisfy { abs($0.x - $1.x) < 0.004 && abs($0.y - $1.y) < 0.004 }
     }
 
-    private var fallbackRadius: CGFloat {
-        let angular = moon?.angularRadius ?? SkyAngles.radians(fromDegrees: 0.25)
-        let fov = pose?.horizontalFOV ?? SkyAngles.radians(fromDegrees: 60)
-        guard fov > 0, previewSize.width > 0 else { return 12 }
-        return tan(angular) / tan(fov / 2) * previewSize.width / 2
-    }
-
     private func updateSprite(for state: MoonState) {
-        let simulatePhase = alignment.simulateMoonPhase
-        let key = SpriteKey(state, simulatePhase: simulatePhase)
-        requestedSpriteKey = key
-        guard key != spriteKey, !renderingSprite, let albedo else { return }
+        guard let albedo else { return }
+        let key = PreviewSpriteKey(
+            librationLongitude: state.librationLongitude,
+            librationLatitude: state.librationLatitude
+        )
+        requestedPreviewKey = key
+        guard key != previewKey, !renderingSprite else { return }
         renderingSprite = true
-        captureSprite = nil
-        let phaseAngle = simulatePhase ? state.phaseAngle : 0
-        let earthshine = simulatePhase ? state.earthshine : 0
-        let brightLimb = state.brightLimbPositionAngle
-        let axis = state.axisPositionAngle
         let librationLongitude = state.librationLongitude
         let librationLatitude = state.librationLatitude
-        let tint = state.tint
         let previewSize = Self.previewSpriteSize
-        let captureSize = Self.captureSpriteSize
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let preview = MoonImageRenderer.render(
                 albedo: albedo,
-                phaseAngle: phaseAngle,
-                brightLimbPositionAngle: brightLimb,
-                axisPositionAngle: axis,
+                phaseAngle: 0,
+                brightLimbPositionAngle: 0,
+                axisPositionAngle: 0,
                 librationLongitude: librationLongitude,
                 librationLatitude: librationLatitude,
-                earthshine: earthshine,
+                earthshine: 0,
                 size: previewSize
             )
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard self.requestedSpriteKey == key else {
-                    self.renderingSprite = false
+                self.renderingSprite = false
+                guard self.requestedPreviewKey == key else {
                     if let moon = self.moon {
                         self.updateSprite(for: moon)
                     }
                     return
                 }
                 self.sprite = preview
-                self.spriteKey = key
-                self.previewSpriteToken &+= 1
-                self.scheduleChannelSplit(tint: tint)
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    let capture = MoonImageRenderer.render(
-                        albedo: albedo,
-                        phaseAngle: phaseAngle,
-                        brightLimbPositionAngle: brightLimb,
-                        axisPositionAngle: axis,
-                        librationLongitude: librationLongitude,
-                        librationLatitude: librationLatitude,
-                        earthshine: earthshine,
-                        size: captureSize
-                    )
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        if self.requestedSpriteKey == key {
-                            self.captureSprite = capture
-                        }
-                        self.renderingSprite = false
-                        if let moon = self.moon {
-                            self.updateSprite(for: moon)
-                        }
-                    }
-                }
+                self.previewKey = key
             }
         }
     }
@@ -557,30 +593,6 @@ final class CameraModel {
         }
     }
 
-    private func scheduleChannelSplit(tint: MoonTint) {
-        guard let sprite else { return }
-        let key = ChannelKey(token: previewSpriteToken, tint: tint)
-        requestedChannelKey = key
-        guard key != channelKey, !splittingChannels else { return }
-        splittingChannels = true
-        let source = sprite
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let images = MoonCompositor.channelImages(sprite: source, tint: tint)
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.splittingChannels = false
-                if self.requestedChannelKey == key {
-                    if let images {
-                        self.previewChannels = images
-                    }
-                    self.channelKey = key
-                } else if let tint = self.moon?.tint {
-                    self.scheduleChannelSplit(tint: tint)
-                }
-            }
-        }
-    }
-
     private func captureWithoutMoon() {
         frozen = nil
         session.capture { [weak self] image in
@@ -593,15 +605,147 @@ final class CameraModel {
             statusMessage = "拍照失败"
             return
         }
-        capturedImage = composite(image) ?? image
+        let upright = image.uprightImage()
+        capturedBaseImage = upright
+        capturedImage = upright
+        if let cgImage = upright.cgImage {
+            resultPixelSize = CGSize(width: cgImage.width, height: cgImage.height)
+        } else {
+            resultPixelSize = upright.size
+        }
+        resultSprite = nil
+        resultGlow = nil
+        resultPlacement = nil
+        captureSpriteKey = nil
+        isAdjustingCapture = false
+        resultReady = frozen == nil
         showResult = true
+        if frozen != nil {
+            refreshCaptureResult(remeasureGlow: true, rerenderSprite: true)
+        }
     }
 
-    private func composite(_ image: UIImage) -> UIImage? {
-        guard let frozen, let sprite = frozen.sprite ?? sprite else { return image }
-        let upright = image.uprightImage()
-        guard let base = upright.cgImage else { return image }
+    private func refreshCaptureResult(remeasureGlow: Bool, rerenderSprite: Bool) {
+        guard let frozen else { return }
+        guard let baseImage = capturedBaseImage, let base = baseImage.cgImage else { return }
         let pixelSize = CGSize(width: base.width, height: base.height)
+        resultPixelSize = pixelSize
+        let corrected = frozen.moon.corrected(
+            azimuthOffset: activeAzimuthOffset,
+            altitudeOffset: activeAltitudeOffset
+        )
+        guard MoonProjection.shouldDraw(
+            altitude: corrected.altitude,
+            angularRadius: corrected.angularRadius,
+            verticalScale: corrected.verticalScale,
+            drawBelowHorizon: frozen.drawBelowHorizon,
+            calibrating: false
+        ) else {
+            capturedImage = baseImage
+            resultPlacement = nil
+            resultReady = true
+            return
+        }
+        let pose = photoPose(frozen: frozen, pixelSize: pixelSize)
+        let useColor = alignment.simulateAtmosphere
+        guard var placement = MoonProjection.project(
+            azimuth: corrected.azimuth,
+            altitude: corrected.altitude,
+            angularRadius: corrected.angularRadius,
+            axisPositionAngle: corrected.axisPositionAngle,
+            pose: pose,
+            imageSize: pixelSize,
+            verticalScale: corrected.verticalScale,
+            tint: useColor ? corrected.tint : .neutral,
+            redDispersion: useColor ? corrected.redDispersion : 0,
+            blueDispersion: useColor ? corrected.blueDispersion : 0
+        ) else {
+            capturedImage = baseImage
+            resultPlacement = nil
+            resultReady = true
+            return
+        }
+        if frozen.useTrackedCenter,
+           let tracked = frozen.trackedCenter,
+           frozen.previewSize.width > 1,
+           frozen.previewSize.height > 1 {
+            let scaleX = pixelSize.width / frozen.previewSize.width
+            let scaleY = pixelSize.height / frozen.previewSize.height
+            placement.center = CGPoint(x: tracked.x * scaleX, y: tracked.y * scaleY)
+        }
+        if isAdjustingCapture, let dragged = resultPlacement?.center {
+            placement.center = dragged
+        }
+        resultPlacement = placement
+        captureRenderGeneration &+= 1
+        let generation = captureRenderGeneration
+        let simulatePhase = alignment.simulateMoonPhase
+        let spriteKey = CaptureSpriteKey(corrected, simulatePhase: simulatePhase)
+        let needsSprite = rerenderSprite || resultSprite == nil || captureSpriteKey != spriteKey
+        let albedo = albedo
+        let existingSprite = resultSprite
+        let existingGlow = resultGlow
+        let center = placement.center
+        let geometricRadius = placement.pixelRadius
+        let captureSize = Self.captureSpriteSize
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let sprite: CGImage?
+            if needsSprite, let albedo {
+                sprite = MoonImageRenderer.render(
+                    albedo: albedo,
+                    phaseAngle: simulatePhase ? corrected.phaseAngle : 0,
+                    brightLimbPositionAngle: corrected.brightLimbPositionAngle,
+                    axisPositionAngle: corrected.axisPositionAngle,
+                    librationLongitude: corrected.librationLongitude,
+                    librationLatitude: corrected.librationLatitude,
+                    earthshine: simulatePhase ? corrected.earthshine : 0,
+                    size: captureSize
+                )
+            } else {
+                sprite = existingSprite
+            }
+            var glow = remeasureGlow ? nil : existingGlow
+            if remeasureGlow, let pixels = MoonCompositor.rgbaPixels(from: base) {
+                glow = MoonCover.measureGlow(
+                    pixels: pixels,
+                    width: base.width,
+                    height: base.height,
+                    center: center,
+                    geometricRadius: geometricRadius
+                )
+            }
+            let composited = sprite.flatMap { sprite in
+                MoonCompositor.composite(
+                    base: base,
+                    sprite: sprite,
+                    center: placement.center,
+                    pixelRadius: placement.pixelRadius,
+                    rotation: placement.rotation,
+                    verticalScale: placement.verticalScale,
+                    zenithRotation: placement.zenithRotation,
+                    tint: placement.tint,
+                    redDispersion: placement.redDispersion,
+                    blueDispersion: placement.blueDispersion,
+                    glow: glow
+                )
+            }
+            let image = composited.map { UIImage(cgImage: $0, scale: baseImage.scale, orientation: .up) }
+            Task { @MainActor [weak self] in
+                guard let self, self.captureRenderGeneration == generation else { return }
+                if let sprite {
+                    self.resultSprite = sprite
+                    self.captureSpriteKey = spriteKey
+                }
+                self.resultGlow = glow
+                if let image {
+                    self.capturedImage = image
+                }
+                self.resultReady = true
+            }
+        }
+    }
+
+    private func photoPose(frozen: FrozenFrame, pixelSize: CGSize) -> CameraPose {
         let fields = MoonProjection.fieldOfView(
             landscapeHorizontalFOV: frozen.landscapeHorizontalFOV,
             imageSize: pixelSize
@@ -609,48 +753,14 @@ final class CameraModel {
         var pose = frozen.pose
         pose.horizontalFOV = fields.horizontal
         pose.verticalFOV = fields.vertical
-        guard MoonProjection.shouldDraw(
-            altitude: frozen.moon.altitude,
-            angularRadius: frozen.moon.angularRadius,
-            verticalScale: frozen.moon.verticalScale,
-            drawBelowHorizon: frozen.drawBelowHorizon,
-            calibrating: frozen.calibrating
-        ) else { return upright }
-        guard var placement = MoonProjection.project(
-            azimuth: frozen.moon.azimuth,
-            altitude: frozen.moon.altitude,
-            angularRadius: frozen.moon.angularRadius,
-            axisPositionAngle: frozen.moon.axisPositionAngle,
-            pose: pose,
-            imageSize: pixelSize,
-            verticalScale: frozen.moon.verticalScale,
-            tint: frozen.moon.tint,
-            redDispersion: frozen.moon.redDispersion,
-            blueDispersion: frozen.moon.blueDispersion
-        ) else { return upright }
-        if let coverCenter = frozen.coverCenter,
-           let coverRadius = frozen.coverRadius,
-           frozen.previewSize.width > 1,
-           frozen.previewSize.height > 1 {
-            let scaleX = pixelSize.width / frozen.previewSize.width
-            let scaleY = pixelSize.height / frozen.previewSize.height
-            placement.center = CGPoint(x: coverCenter.x * scaleX, y: coverCenter.y * scaleY)
-            placement.coverRadius = coverRadius * (scaleX + scaleY) / 2
-        }
-        guard let composited = MoonCompositor.composite(
-            base: base,
-            sprite: sprite,
-            center: placement.center,
-            pixelRadius: placement.pixelRadius,
-            coverRadius: placement.coverRadius,
-            rotation: placement.rotation,
-            verticalScale: placement.verticalScale,
-            zenithRotation: placement.zenithRotation,
-            tint: placement.tint,
-            redDispersion: placement.redDispersion,
-            blueDispersion: placement.blueDispersion
-        ) else { return upright }
-        return UIImage(cgImage: composited, scale: upright.scale, orientation: .up)
+        return pose
+    }
+
+    private func clamped(_ point: CGPoint) -> CGPoint {
+        CGPoint(
+            x: min(max(point.x, 0), max(resultPixelSize.width - 1, 0)),
+            y: min(max(point.y, 0), max(resultPixelSize.height - 1, 0))
+        )
     }
 }
 
@@ -659,34 +769,13 @@ private struct FrozenFrame {
     var pose: CameraPose
     var landscapeHorizontalFOV: Double
     var drawBelowHorizon: Bool
-    var calibrating: Bool
-    var sprite: CGImage?
     var location: CLLocation?
-    var coverCenter: CGPoint?
-    var coverRadius: CGFloat?
+    var trackedCenter: CGPoint?
+    var useTrackedCenter: Bool
     var previewSize: CGSize
 }
 
-private struct ChannelKey: Equatable {
-    var token: Int
-    var red: Int
-    var green: Int
-    var blue: Int
-
-    init(token: Int, tint: MoonTint) {
-        self.token = token
-        red = Self.quantize(tint.red)
-        green = Self.quantize(tint.green)
-        blue = Self.quantize(tint.blue)
-    }
-
-    private static func quantize(_ value: Double) -> Int {
-        guard value.isFinite else { return 25_500 }
-        return Int(min(25_500, max(0, (value * 100).rounded())))
-    }
-}
-
-private struct SpriteKey: Equatable {
+private struct CaptureSpriteKey: Equatable {
     var phase: Int
     var limb: Int
     var axis: Int

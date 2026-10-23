@@ -9,6 +9,7 @@ final class AlignmentStore {
     private let belowHorizonKey = "alignment.drawMoonBelowHorizon"
     private let simulatePhaseKey = "alignment.simulateMoonPhase"
     private let simulateAtmosphereKey = "alignment.simulateAtmosphere"
+    private let visualTrackingKey = "alignment.visualTrackingEnabled"
 
     var azimuthOffsetDegrees: Double {
         didSet { defaults.set(azimuthOffsetDegrees, forKey: azimuthKey) }
@@ -30,6 +31,10 @@ final class AlignmentStore {
         didSet { defaults.set(simulateAtmosphere, forKey: simulateAtmosphereKey) }
     }
 
+    var visualTrackingEnabled: Bool {
+        didSet { defaults.set(visualTrackingEnabled, forKey: visualTrackingKey) }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         azimuthOffsetDegrees = defaults.object(forKey: azimuthKey) as? Double ?? 0
@@ -37,6 +42,7 @@ final class AlignmentStore {
         drawMoonBelowHorizon = defaults.object(forKey: belowHorizonKey) as? Bool ?? false
         simulateMoonPhase = defaults.object(forKey: simulatePhaseKey) as? Bool ?? true
         simulateAtmosphere = defaults.object(forKey: simulateAtmosphereKey) as? Bool ?? true
+        visualTrackingEnabled = defaults.object(forKey: visualTrackingKey) as? Bool ?? true
     }
 
     func resetAlignment() {

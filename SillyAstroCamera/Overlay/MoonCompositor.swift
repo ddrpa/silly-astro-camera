@@ -13,48 +13,58 @@ enum MoonCompositor {
         sprite: CGImage,
         center: CGPoint,
         pixelRadius: CGFloat,
-        coverRadius: CGFloat = 0,
         rotation: CGFloat,
         verticalScale: CGFloat = 1,
         zenithRotation: CGFloat = 0,
         tint: MoonTint = .neutral,
         redDispersion: CGFloat = 0,
-        blueDispersion: CGFloat = 0
+        blueDispersion: CGFloat = 0,
+        glow: GlowCover? = nil
     ) -> CGImage? {
         let width = base.width
         let height = base.height
-        guard let context = CGContext(
-            data: nil,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return nil }
-        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        context.interpolationQuality = .none
-        context.draw(base, in: bounds)
+        guard width > 0, height > 0 else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let drewBase = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let context = CGContext(
+                data: raw.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.interpolationQuality = .none
+            context.draw(base, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drewBase else { return nil }
+        if let glow {
+            MoonCover.apply(glow, to: &pixels, width: width, height: height, center: center)
+        }
         let centerCG = CGPoint(x: center.x, y: CGFloat(height) - center.y)
-        let diskRadius = max(coverRadius, pixelRadius) + max(abs(redDispersion), abs(blueDispersion))
-        fillOpaqueDisk(in: context, center: centerCG, radius: diskRadius)
         let identity = abs(verticalScale - 1) < 1e-6
             && abs(zenithRotation) < 1e-6
             && abs(redDispersion) < 1e-4
             && abs(blueDispersion) < 1e-4
             && tint == .neutral
         if identity {
-            drawSprite(
-                in: context,
-                sprite: sprite,
-                center: centerCG,
-                pixelRadius: pixelRadius,
-                rotation: rotation,
-                verticalScale: 1,
-                zenithRotation: 0,
-                altitudeShift: 0
-            )
-            return context.makeImage()
+            let drew = pixels.withUnsafeMutableBytes { raw -> Bool in
+                guard let context = bitmapContext(raw.baseAddress, width: width, height: height) else { return false }
+                drawSprite(
+                    in: context,
+                    sprite: sprite,
+                    center: centerCG,
+                    pixelRadius: pixelRadius,
+                    rotation: rotation,
+                    verticalScale: 1,
+                    zenithRotation: 0,
+                    altitudeShift: 0
+                )
+                return true
+            }
+            return drew ? image(pixels: pixels, width: width, height: height) : nil
         }
         guard let moon = dispersedMoon(
             sprite: sprite,
@@ -66,8 +76,39 @@ enum MoonCompositor {
             redDispersion: redDispersion,
             blueDispersion: blueDispersion
         ) else { return nil }
-        context.draw(moon.image, in: moon.rect.offsetBy(dx: centerCG.x, dy: centerCG.y))
-        return context.makeImage()
+        let drewMoon = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let context = bitmapContext(raw.baseAddress, width: width, height: height) else { return false }
+            context.draw(moon.image, in: moon.rect.offsetBy(dx: centerCG.x, dy: centerCG.y))
+            return true
+        }
+        return drewMoon ? image(pixels: pixels, width: width, height: height) : nil
+    }
+
+    static func rgbaPixels(from image: CGImage) -> [UInt8]? {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0 else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let drew = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let context = bitmapContext(raw.baseAddress, width: width, height: height) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        return drew ? pixels : nil
+    }
+
+    private static func bitmapContext(_ data: UnsafeMutableRawPointer?, width: Int, height: Int) -> CGContext? {
+        let context = CGContext(
+            data: data,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+        context?.interpolationQuality = .none
+        return context
     }
 
     static func channelImages(sprite: CGImage, tint: MoonTint) -> MoonChannelImages? {
@@ -105,19 +146,6 @@ enum MoonCompositor {
               let green = image(pixels: greenPixels, width: width, height: height),
               let blue = image(pixels: bluePixels, width: width, height: height) else { return nil }
         return MoonChannelImages(red: red, green: green, blue: blue)
-    }
-
-    private static func fillOpaqueDisk(in context: CGContext, center: CGPoint, radius: CGFloat) {
-        guard radius > 0 else { return }
-        context.saveGState()
-        context.setFillColor(red: 0, green: 0, blue: 0, alpha: 1)
-        context.fillEllipse(in: CGRect(
-            x: center.x - radius,
-            y: center.y - radius,
-            width: radius * 2,
-            height: radius * 2
-        ))
-        context.restoreGState()
     }
 
     private static func drawSprite(

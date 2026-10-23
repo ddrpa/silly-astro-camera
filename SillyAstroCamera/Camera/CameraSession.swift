@@ -20,10 +20,11 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate, AVCaptureVid
     private var coverTarget: CoverTarget?
     private var lastAnalysisSeconds = -1.0
     private var sentEmptyCover = true
+    private var videoAnalysisEnabled = false
 
     var onConfigured: (@MainActor (String?) -> Void)?
     var onZoom: (@MainActor (Double) -> Void)?
-    var onApparentCover: (@MainActor (ApparentDisk?) -> Void)?
+    var onApparentCover: (@MainActor (CoverMeasurement?) -> Void)?
 
     func start() {
         sessionQueue.async { [weak self] in
@@ -134,15 +135,23 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate, AVCaptureVid
         }
     }
 
-    func setCoverTarget(center: CGPoint?, radius: CGFloat, previewSize: CGSize) {
+    func setVideoAnalysisEnabled(_ enabled: Bool) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.videoAnalysisEnabled = enabled
+            self.applyVideoAnalysisOutput()
+        }
+    }
+
+    func setCoverTarget(_ target: CoverTarget?) {
         videoQueue.async { [weak self] in
             guard let self else { return }
-            guard let center, radius > 0, previewSize.width > 1, previewSize.height > 1 else {
+            guard let target, target.geometricRadius > 0, target.previewSize.width > 1, target.previewSize.height > 1 else {
                 self.coverTarget = nil
                 self.publishCover(nil)
                 return
             }
-            self.coverTarget = CoverTarget(center: center, radius: radius, previewSize: previewSize)
+            self.coverTarget = target
         }
     }
 
@@ -213,9 +222,6 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate, AVCaptureVid
         videoOutput.alwaysDiscardsLateVideoFrames = true
         videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
-        if session.canAddOutput(videoOutput) {
-            session.addOutput(videoOutput)
-        }
         self.device = device
         configure(device) {
             if device.isGeometricDistortionCorrectionSupported {
@@ -225,11 +231,33 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate, AVCaptureVid
         selectPhotoDimensions(on: device)
         applyAutomaticExposure(on: device)
         session.commitConfiguration()
+        applyVideoAnalysisOutput()
         applyOrientation(interfaceOrientation)
         publishZoom(device)
         let callback = onConfigured
         Task { @MainActor in
             callback?(nil)
+        }
+    }
+
+    private func applyVideoAnalysisOutput() {
+        guard configured else { return }
+        let attached = session.outputs.contains(videoOutput)
+        guard attached != videoAnalysisEnabled else {
+            if videoAnalysisEnabled {
+                applyOrientation(interfaceOrientation)
+            }
+            return
+        }
+        session.beginConfiguration()
+        if videoAnalysisEnabled, session.canAddOutput(videoOutput) {
+            session.addOutput(videoOutput)
+        } else if attached {
+            session.removeOutput(videoOutput)
+        }
+        session.commitConfiguration()
+        if videoAnalysisEnabled {
+            applyOrientation(interfaceOrientation)
         }
     }
 
@@ -296,17 +324,12 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate, AVCaptureVid
             return
         }
         guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let disk = MoonCover.measure(
-            pixelBuffer: buffer,
-            previewCenter: target.center,
-            previewRadius: target.radius,
-            previewSize: target.previewSize
-        )
-        publishCover(disk)
+        let measurement = MoonCover.measure(pixelBuffer: buffer, target: target)
+        publishCover(measurement)
     }
 
-    private func publishCover(_ disk: ApparentDisk?) {
-        if disk == nil {
+    private func publishCover(_ measurement: CoverMeasurement?) {
+        if measurement == nil {
             guard !sentEmptyCover else { return }
             sentEmptyCover = true
         } else {
@@ -314,7 +337,7 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate, AVCaptureVid
         }
         let callback = onApparentCover
         Task { @MainActor in
-            callback?(disk)
+            callback?(measurement)
         }
     }
 
@@ -372,12 +395,6 @@ final class CameraSession: NSObject, AVCapturePhotoCaptureDelegate, AVCaptureVid
         default:
             return 90
         }
-    }
-
-    private struct CoverTarget {
-        var center: CGPoint
-        var radius: CGFloat
-        var previewSize: CGSize
     }
 
     private static func backCamera() -> AVCaptureDevice? {

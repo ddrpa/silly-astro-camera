@@ -18,8 +18,8 @@ struct CameraScreen: View {
                 .position(x: frame.midX, y: frame.midY)
                 .gesture(previewGesture)
 
-                if let placement = model.overlayPlacement, let channels = model.previewChannels {
-                    MoonDiskOverlay(channels: channels, placement: placement)
+                if let placement = model.overlayPlacement, let sprite = model.sprite {
+                    MoonDiskOverlay(sprite: sprite, placement: placement)
                         .position(x: frame.minX + placement.center.x, y: frame.minY + placement.center.y)
                         .allowsHitTesting(false)
                 }
@@ -68,13 +68,6 @@ struct CameraScreen: View {
 
                     Spacer()
 
-                    if model.isCalibrating {
-                        Text("拖动月盘，盖住真实的月亮")
-                            .font(.footnote)
-                        Text(model.calibrationReadout)
-                            .font(.footnote.monospacedDigit())
-                    }
-
                     controls(model)
                         .padding(.horizontal, 20)
                         .padding(.bottom, 18)
@@ -97,13 +90,7 @@ struct CameraScreen: View {
         .ignoresSafeArea()
         .statusBarHidden()
         .fullScreenCover(isPresented: $model.showResult) {
-            if let image = model.capturedImage {
-                CaptureResultView(
-                    image: image,
-                    onSave: { model.saveCapturedPhoto() },
-                    onDiscard: { model.discardCapturedPhoto() }
-                )
-            }
+            CaptureResultView(model: model)
         }
         .onDisappear { model.stop() }
     }
@@ -138,20 +125,11 @@ struct CameraScreen: View {
                     model.refreshDisplayedMoon()
                 }
                 iconToggle(
-                    image: "MoonPhase",
-                    label: "月相模拟",
-                    isOn: alignment.simulateMoonPhase
+                    image: "AutoTracking",
+                    label: "自动追踪",
+                    isOn: alignment.visualTrackingEnabled
                 ) {
-                    alignment.simulateMoonPhase.toggle()
-                    model.refreshDisplayedMoon()
-                }
-                iconToggle(
-                    image: "Atmosphere",
-                    label: "大气模拟",
-                    isOn: alignment.simulateAtmosphere
-                ) {
-                    alignment.simulateAtmosphere.toggle()
-                    model.reloadMoon()
+                    model.setVisualTracking(!alignment.visualTrackingEnabled)
                 }
                 Spacer()
             }
@@ -160,12 +138,6 @@ struct CameraScreen: View {
                 zoomButton(1)
                 zoomButton(2)
                 Spacer()
-                if model.isCalibrating {
-                    Button("重置") { model.resetAlignment() }
-                    Button("完成") { model.finishCalibration() }
-                } else {
-                    Button("校正") { model.beginCalibration() }
-                }
             }
             .font(.subheadline.weight(.semibold))
             Button {
@@ -213,20 +185,16 @@ struct CameraScreen: View {
     private var previewGesture: some Gesture {
         SimultaneousGesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    guard model.isCalibrating else { return }
-                    model.dragCalibration(to: value.location)
-                }
                 .onEnded { value in
-                    if model.isCalibrating {
-                        model.endCalibration(at: value.location)
-                    } else if hypot(value.translation.width, value.translation.height) < 12, let previewView {
+                    guard hypot(value.translation.width, value.translation.height) < 12 else { return }
+                    if model.alignment.visualTrackingEnabled {
+                        model.track(at: value.location)
+                    } else if let previewView {
                         model.focus(at: value.location, in: previewView)
                     }
                 },
             MagnificationGesture()
                 .onChanged { scale in
-                    guard !model.isCalibrating else { return }
                     model.updatePinch(scale)
                 }
                 .onEnded { _ in
@@ -275,41 +243,25 @@ struct CameraScreen: View {
     @State private var modelScreenOrientation: ScreenOrientation = .portrait
 }
 
-private struct MoonDiskOverlay: View {
-    var channels: MoonChannelImages
+struct MoonDiskOverlay: View {
+    var sprite: CGImage
     var placement: MoonPlacement
+    var showsTint = false
 
     var body: some View {
         let diameter = placement.pixelRadius * 2
-        let cover = max(placement.coverRadius, placement.pixelRadius)
-            + max(abs(placement.redDispersion), abs(placement.blueDispersion))
         let relative = placement.rotation - placement.zenithRotation
-        ZStack {
-            Circle()
-                .fill(.black)
-                .frame(width: cover * 2, height: cover * 2)
-            channel(channels.red, shift: placement.redDispersion, diameter: diameter, relative: relative)
-            channel(channels.green, shift: 0, diameter: diameter, relative: relative)
-            channel(channels.blue, shift: placement.blueDispersion, diameter: diameter, relative: relative)
-        }
-        .frame(width: cover * 2, height: cover * 2)
-        .compositingGroup()
-    }
-
-    private func channel(
-        _ image: CGImage,
-        shift: CGFloat,
-        diameter: CGFloat,
-        relative: CGFloat
-    ) -> some View {
-        Image(decorative: image, scale: 1)
+        Image(decorative: sprite, scale: 1)
             .resizable()
             .frame(width: diameter, height: diameter)
             .rotationEffect(.radians(relative))
             .scaleEffect(x: 1, y: placement.verticalScale)
             .rotationEffect(.radians(placement.zenithRotation))
-            .offset(placement.zenithOffset(shift))
-            .blendMode(.plusLighter)
+            .colorMultiply(showsTint ? Color(
+                red: min(1, max(0, placement.tint.red)),
+                green: min(1, max(0, placement.tint.green)),
+                blue: min(1, max(0, placement.tint.blue))
+            ) : .white)
     }
 }
 

@@ -373,6 +373,9 @@ enum MoonLogicTests {
         try expectComposite(expect)
         expectMetering(expect)
         expectCover(expect)
+        expectGlow(expect)
+        expectPreviewSprite(expect)
+        expectTrackingModes(expect)
 
         if !failures.isEmpty {
             throw TestFailure(message: failures.joined(separator: "\n"))
@@ -524,21 +527,55 @@ enum MoonLogicTests {
         expect(blueChannel.blue == 0 && blueChannel.red == 0 && blueChannel.green == 0, "蓝增益为 0 时应清空蓝色，实际 \(blueChannel)")
         expect(alpha(channels.red, x: 0, y: 0) == 180, "通道图应保留原来的 alpha")
 
-        guard let white = solidImage(width: 21, height: 21, red: 255, green: 255, blue: 255, alpha: 255),
-              let covered = MoonCompositor.composite(
-                base: white,
-                sprite: sprite,
-                center: CGPoint(x: 10, y: 10),
-                pixelRadius: 2.5,
-                rotation: 0
-              ) else {
-            expect(false, "白底覆盖合成失败")
+        guard let flat = solidImage(width: 21, height: 21, red: 20, green: 40, blue: 90, alpha: 255) else {
+            expect(false, "纯色底图创建失败")
             return
         }
-        let inside = pixel(covered, x: 8, y: 10)
-        let outside = pixel(covered, x: 0, y: 0)
-        expect(inside.red == 0 && inside.green == 0 && inside.blue == 0, "视圆内应盖成不透明黑，实际 \(inside)")
-        expect(outside.red == 255 && outside.green == 255 && outside.blue == 255, "视圆外应保留景物，实际 \(outside)")
+        expect(
+            MoonCover.measureGlow(
+                pixels: rgba(flat),
+                width: 21,
+                height: 21,
+                center: CGPoint(x: 10, y: 10),
+                geometricRadius: 3
+            ) == nil,
+            "没有高出背景的辉光时不应生成遮罩"
+        )
+        guard let untouched = MoonCompositor.composite(
+            base: flat,
+            sprite: sprite,
+            center: CGPoint(x: 10, y: 10),
+            pixelRadius: 2.5,
+            rotation: 0
+        ) else {
+            expect(false, "无辉光合成失败")
+            return
+        }
+        let skyPixel = pixel(untouched, x: 0, y: 0)
+        expect(skyPixel.red == 20 && skyPixel.green == 40 && skyPixel.blue == 90, "没有辉光时景物应保持原色，实际 \(skyPixel)")
+
+        var markedPixels = [UInt8](repeating: 255, count: 21 * 21 * 4)
+        let markedIndex = (6 * 21 + 10) * 4
+        markedPixels[markedIndex] = 255
+        markedPixels[markedIndex + 1] = 0
+        markedPixels[markedIndex + 2] = 0
+        markedPixels[markedIndex + 3] = 255
+        guard let marked = image(pixels: markedPixels, width: 21, height: 21),
+              let passed = MoonCompositor.composite(
+                base: marked,
+                sprite: sprite,
+                center: CGPoint(x: 10, y: 10),
+                pixelRadius: 1,
+                rotation: 0,
+                glow: GlowCover(fill: CoverFill(red: 0, green: 1, blue: 0), outerRadius: 6, feather: 1)
+              ) else {
+            expect(false, "辉光坐标合成失败")
+            return
+        }
+        let above = pixel(passed, x: 10, y: 6)
+        let below = pixel(passed, x: 10, y: 18)
+        expect(above.green > 200 && above.red < 40, "中心上方应被辉光遮罩盖住，实际 \(above)")
+        expect(below.red == 255 && below.green == 255, "中心下方遮罩外应保持原色，实际 \(below)")
     }
 
     private static func expectMetering(_ expect: (Bool, String) -> Void) {
@@ -574,7 +611,7 @@ enum MoonLogicTests {
             height: height,
             geometricCenter: CGPoint(x: 20, y: 20),
             geometricRadius: 3
-        )
+        ).disk
         expect(aligned != nil, "与几何圆重叠的亮块应给出视圆")
         if let aligned {
             expect(aligned.radius > 6 && aligned.radius <= 12, "视半径应包住光晕并限制在 4 倍内，实际 \(aligned.radius)")
@@ -589,8 +626,64 @@ enum MoonLogicTests {
             height: height,
             geometricCenter: CGPoint(x: 12, y: 20),
             geometricRadius: 3
+        ).disk
+        expect(missed == nil, "窄搜索窗外的亮块应退回几何半径")
+
+        let acquired = MoonCover.measure(
+            luminance: offset,
+            width: width,
+            height: height,
+            geometricCenter: CGPoint(x: 12, y: 20),
+            geometricRadius: 3,
+            searchCenter: CGPoint(x: 12, y: 20),
+            searchRadius: 30
+        ).disk
+        expect(acquired != nil, "宽搜索应锁定不与几何圆重叠的亮块")
+        if let acquired {
+            expect(hypot(acquired.center.x - 34, acquired.center.y - 20) < 1.5, "锁定圆心应落在亮块上，实际 \(acquired.center)")
+        }
+
+        var crowded = [UInt8](repeating: 8, count: width * height)
+        fillDisk(&crowded, width: width, centerX: 8, centerY: 20, radius: 3, value: 250)
+        fillDisk(&crowded, width: width, centerX: 34, centerY: 20, radius: 3, value: 250)
+        let nearer = MoonCover.measure(
+            luminance: crowded,
+            width: width,
+            height: height,
+            geometricCenter: CGPoint(x: 20, y: 20),
+            geometricRadius: 3,
+            searchCenter: CGPoint(x: 20, y: 20),
+            searchRadius: 30
+        ).disk
+        expect(nearer != nil && hypot(nearer!.center.x - 8, nearer!.center.y - 20) < 1.5, "多个亮块时应选择更靠近搜索中心的一个，实际 \(String(describing: nearer))")
+        let tapped = MoonCover.measure(
+            luminance: crowded,
+            width: width,
+            height: height,
+            geometricCenter: CGPoint(x: 20, y: 20),
+            geometricRadius: 3,
+            searchCenter: CGPoint(x: 20, y: 20),
+            searchRadius: 30,
+            preferenceCenter: CGPoint(x: 30, y: 21)
+        ).disk
+        expect(tapped != nil && hypot(tapped!.center.x - 34, tapped!.center.y - 20) < 1.5, "点选应提高离点击更近的候选项权重，实际 \(String(describing: tapped))")
+        expect(
+            MoonCover.candidateWeight(distance: 4, geometricRadius: 3)
+                > MoonCover.candidateWeight(distance: 22, geometricRadius: 3),
+            "候选项离点击越近权重越高"
         )
-        expect(missed == nil, "不与几何圆重叠的亮块应退回几何半径")
+
+        var oversized = [UInt8](repeating: 8, count: width * height)
+        fillDisk(&oversized, width: width, centerX: 20, centerY: 20, radius: 16, value: 250)
+        let tooBig = MoonCover.measure(
+            luminance: oversized,
+            width: width,
+            height: height,
+            geometricCenter: CGPoint(x: 20, y: 20),
+            geometricRadius: 3,
+            searchRadius: 30
+        ).disk
+        expect(tooBig == nil, "大于 4 倍几何半径的亮块应丢弃")
 
         let sea = [UInt8](repeating: 250, count: width * height)
         let flooded = MoonCover.measure(
@@ -599,8 +692,47 @@ enum MoonLogicTests {
             height: height,
             geometricCenter: CGPoint(x: 20, y: 20),
             geometricRadius: 3
-        )
+        ).disk
         expect(flooded == nil, "整片灯海应退回几何半径")
+
+        let colorWidth = 48
+        let colorCount = colorWidth * colorWidth
+        var red = [UInt8](repeating: 20, count: colorCount)
+        var green = [UInt8](repeating: 40, count: colorCount)
+        var blue = [UInt8](repeating: 90, count: colorCount)
+        var colorLuminance = [UInt8](repeating: 50, count: colorCount)
+        fillColorDisk(&red, &green, &blue, &colorLuminance, width: colorWidth, centerX: 24, centerY: 24, radius: 5, red: 250, green: 250, blue: 250, luminance: 250)
+        for index in [colorWidth * 12 + 24, colorWidth * 36 + 24, colorWidth * 24 + 12] {
+            red[index] = 255
+            green[index] = 255
+            blue[index] = 255
+            colorLuminance[index] = 255
+        }
+        let colored = MoonCover.measure(
+            luminance: colorLuminance,
+            width: colorWidth,
+            height: colorWidth,
+            geometricCenter: CGPoint(x: 24, y: 24),
+            geometricRadius: 4,
+            red: red,
+            green: green,
+            blue: blue
+        )
+        expect(colored.fill.blue > colored.fill.green && colored.fill.green > colored.fill.red, "暗蓝天空的遮罩应偏蓝，实际 \(colored.fill)")
+        expect(colored.fill.blue > 0.25 && colored.fill.red < 0.15, "遮罩应取暗部天空而不是纯黑或白色，实际 \(colored.fill)")
+        let sampledOnly = MoonCover.measure(
+            luminance: colorLuminance,
+            width: colorWidth,
+            height: colorWidth,
+            geometricCenter: CGPoint(x: 24, y: 24),
+            geometricRadius: 4,
+            red: red,
+            green: green,
+            blue: blue,
+            acquire: false
+        )
+        expect(sampledOnly.disk == nil, "关闭追踪时不应挪动视圆")
+        expect(sampledOnly.fill.blue > sampledOnly.fill.red && sampledOnly.fill.blue > 0.25, "关闭追踪时遮罩仍应取周围天空色，实际 \(sampledOnly.fill)")
 
         let smoothed = MoonCover.smooth(
             previous: ApparentDisk(center: CGPoint(x: 0, y: 0), radius: 4),
@@ -608,6 +740,151 @@ enum MoonLogicTests {
         )
         expect(smoothed != nil && smoothed!.center.x > 0 && smoothed!.center.x < 10, "视圆应做指数平滑，实际 \(String(describing: smoothed))")
         expect(MoonCover.smooth(previous: smoothed, measured: nil) == nil, "测量失败应立刻退回几何半径")
+    }
+
+    private static func expectGlow(_ expect: (Bool, String) -> Void) {
+        let width = 81
+        let height = 81
+        let center = CGPoint(x: 40, y: 40)
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let index = (y * width + x) * 4
+                let distance = hypot(CGFloat(x) - center.x, CGFloat(y) - center.y)
+                let glow = max(0, min(1, 1 - distance / 20))
+                let red = UInt8((20 + glow * 230).rounded())
+                let green = UInt8((40 + glow * 210).rounded())
+                let blue = UInt8((90 + glow * 160).rounded())
+                pixels[index] = red
+                pixels[index + 1] = green
+                pixels[index + 2] = blue
+                pixels[index + 3] = 255
+            }
+        }
+        let marker = (40 + 30) * 4 + 40 * width * 4
+        pixels[marker] = 0
+        pixels[marker + 1] = 255
+        pixels[marker + 2] = 0
+        pixels[marker + 3] = 255
+        guard let glow = MoonCover.measureGlow(
+            pixels: pixels,
+            width: width,
+            height: height,
+            center: center,
+            geometricRadius: 4
+        ) else {
+            expect(false, "渐暗辉光应测出遮罩")
+            return
+        }
+        expect(glow.outerRadius > 8, "辉光外沿应超出几何半径，实际 \(glow.outerRadius)")
+        expect(glow.outerRadius < 4 * MoonCover.glowRadiusCap, "辉光外沿不应顶到搜索上限，实际 \(glow.outerRadius)")
+        expect(glow.feather > 1, "羽化应跟着辉光下落，实际 \(glow.feather)")
+        expect(glow.fill.blue > glow.fill.green && glow.fill.green > glow.fill.red, "遮罩颜色应取外圈暗天空，实际 \(glow.fill)")
+        var covered = pixels
+        MoonCover.apply(glow, to: &covered, width: width, height: height, center: center)
+        let core = rgbaPixel(covered, width: width, x: 40, y: 40)
+        let halo = rgbaPixel(covered, width: width, x: 52, y: 40)
+        let outside = rgbaPixel(covered, width: width, x: 70, y: 40)
+        let haloBefore = rgbaPixel(pixels, width: width, x: 52, y: 40)
+        expect(core.blue > core.green && core.red < 40, "辉光中心应盖成天空色，实际 \(core)")
+        expect(halo.blue < haloBefore.blue - 40, "几何圆盖不住的渐暗环应向天空色收回，实际 \(halo) 原 \(haloBefore)")
+        expect(outside.green == 255 && outside.red == 0, "辉光外的景物应保持不变，实际 \(outside)")
+
+        var wide = [UInt8](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let index = (y * width + x) * 4
+                let distance = hypot(CGFloat(x) - center.x, CGFloat(y) - center.y)
+                let glowAmount = max(0, min(1, 1 - distance / 50))
+                wide[index] = UInt8((20 + glowAmount * 230).rounded())
+                wide[index + 1] = UInt8((40 + glowAmount * 210).rounded())
+                wide[index + 2] = UInt8((90 + glowAmount * 160).rounded())
+                wide[index + 3] = 255
+            }
+        }
+        guard let capped = MoonCover.measureGlow(
+            pixels: wide,
+            width: width,
+            height: height,
+            center: center,
+            geometricRadius: 2
+        ) else {
+            expect(false, "超出搜索半径的辉光仍应在上限内测到")
+            return
+        }
+        expect(capped.outerRadius <= 2 * MoonCover.glowRadiusCap + 1, "外沿应停在 16 倍几何半径，实际 \(capped.outerRadius)")
+        var cappedPixels = wide
+        MoonCover.apply(capped, to: &cappedPixels, width: width, height: height, center: center)
+        let insideCap = rgbaPixel(cappedPixels, width: width, x: 48, y: 40)
+        let beyondCap = rgbaPixel(cappedPixels, width: width, x: 76, y: 40)
+        let beyondBefore = rgbaPixel(wide, width: width, x: 76, y: 40)
+        expect(insideCap.blue > insideCap.red, "上限内的辉光应被盖住，实际 \(insideCap)")
+        expect(beyondCap == beyondBefore, "上限外的辉光应保留，实际 \(beyondCap)")
+    }
+
+    private static func expectPreviewSprite(_ expect: (Bool, String) -> Void) {
+        let full = PreviewSpriteKey(librationLongitude: 0.1, librationLatitude: -0.2)
+        let turned = PreviewSpriteKey(librationLongitude: 0.1, librationLatitude: -0.2)
+        expect(full == turned, "相同天平动应共用预览精灵")
+        let shifted = PreviewSpriteKey(
+            librationLongitude: 0.1 + SkyAngles.radians(fromDegrees: 0.6),
+            librationLatitude: -0.2
+        )
+        expect(full != shifted, "天平动超过半度应重画预览精灵")
+        expect(
+            !MoonCover.shouldPublishTrackingTarget(previous: CGPoint(x: 10, y: 10), center: CGPoint(x: 10.4, y: 10.2)),
+            "月心移动不足 1 像素时不应推动追踪目标"
+        )
+        expect(
+            MoonCover.shouldPublishTrackingTarget(previous: CGPoint(x: 10, y: 10), center: CGPoint(x: 11.2, y: 10)),
+            "月心移动达到 1 像素时应推动追踪目标"
+        )
+        expect(
+            MoonCover.shouldPublishTrackingTarget(previous: nil, center: CGPoint(x: 10, y: 10)),
+            "第一次追踪目标应推动"
+        )
+    }
+
+    private static func expectTrackingModes(_ expect: (Bool, String) -> Void) {
+        let suite = "silly-astro-camera.tracking-modes"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let store = AlignmentStore(defaults: defaults)
+        expect(store.visualTrackingEnabled, "默认应打开自动追踪")
+        store.azimuthOffsetDegrees = 4.5
+        store.visualTrackingEnabled = false
+        expect(!store.visualTrackingEnabled, "可以关闭自动追踪")
+        expect(abs(store.azimuthOffsetDegrees - 4.5) < 1e-9, "关闭自动追踪应保留已保存的偏差")
+        store.visualTrackingEnabled = true
+        expect(store.visualTrackingEnabled, "可以重新打开自动追踪")
+        expect(abs(store.azimuthOffsetDegrees - 4.5) < 1e-9, "自动追踪不应清掉已保存的偏差")
+        defaults.removePersistentDomain(forName: suite)
+    }
+
+    private static func fillColorDisk(
+        _ red: inout [UInt8],
+        _ green: inout [UInt8],
+        _ blue: inout [UInt8],
+        _ luminance: inout [UInt8],
+        width: Int,
+        centerX: Int,
+        centerY: Int,
+        radius: Int,
+        red redValue: UInt8,
+        green greenValue: UInt8,
+        blue blueValue: UInt8,
+        luminance luminanceValue: UInt8
+    ) {
+        let limit = radius * radius
+        for y in 0..<width {
+            for x in 0..<width where (x - centerX) * (x - centerX) + (y - centerY) * (y - centerY) <= limit {
+                let index = y * width + x
+                red[index] = redValue
+                green[index] = greenValue
+                blue[index] = blueValue
+                luminance[index] = luminanceValue
+            }
+        }
     }
 
     private static func fillDisk(_ pixels: inout [UInt8], width: Int, centerX: Int, centerY: Int, radius: Int, value: UInt8) {
@@ -714,6 +991,17 @@ enum MoonLogicTests {
             pixels[index + 3] = alpha
         }
         return image(pixels: pixels, width: width, height: height)
+    }
+
+    private static func rgba(_ image: CGImage) -> [UInt8] {
+        guard let data = image.dataProvider?.data else { return [] }
+        return [UInt8](data as Data)
+    }
+
+    private static func rgbaPixel(_ pixels: [UInt8], width: Int, x: Int, y: Int) -> (red: Int, green: Int, blue: Int) {
+        let index = (y * width + x) * 4
+        guard pixels.count >= index + 3 else { return (-1, -1, -1) }
+        return (Int(pixels[index]), Int(pixels[index + 1]), Int(pixels[index + 2]))
     }
 
     private static func pixel(_ image: CGImage, x: Int, y: Int) -> (red: Int, green: Int, blue: Int) {

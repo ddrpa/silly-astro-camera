@@ -43,12 +43,37 @@ struct MoonPlacement: Equatable {
     var tint: MoonTint
     var redDispersion: CGFloat
     var blueDispersion: CGFloat
+    var coverFill: CoverFill = .black
 
     func zenithOffset(_ pixelsTowardZenith: CGFloat) -> CGSize {
         CGSize(
             width: sin(zenithRotation) * pixelsTowardZenith,
             height: -cos(zenithRotation) * pixelsTowardZenith
         )
+    }
+
+    func visiblyDiffers(from other: MoonPlacement) -> Bool {
+        if hypot(center.x - other.center.x, center.y - other.center.y) >= 1 { return true }
+        if abs(pixelRadius - other.pixelRadius) >= 1 { return true }
+        if abs(verticalScale - other.verticalScale) >= 0.01 { return true }
+        let radius = max(pixelRadius, 1)
+        if abs(rotation - other.rotation) >= 1 / radius { return true }
+        if abs(zenithRotation - other.zenithRotation) >= 1 / radius { return true }
+        return false
+    }
+}
+
+struct PreviewSpriteKey: Equatable {
+    var librationLongitude: Int
+    var librationLatitude: Int
+
+    init(librationLongitude: Double, librationLatitude: Double) {
+        self.librationLongitude = Self.quantize(librationLongitude)
+        self.librationLatitude = Self.quantize(librationLatitude)
+    }
+
+    private static func quantize(_ radians: Double) -> Int {
+        Int((radians * 180 / .pi) * 2)
     }
 }
 
