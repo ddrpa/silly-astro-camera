@@ -236,6 +236,7 @@
 				DEVELOPMENT_TEAM = HRDPYDWQ8M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CADisableMinimumFrameDurationOnPhone = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "需要使用相机拍摄地平线景物，并在月亮的位置叠加上月面。";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "需要定位来计算月亮的方位和高度。";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "需要把叠上月亮的照片保存到相册。";
@@ -267,6 +268,7 @@
 				DEVELOPMENT_TEAM = HRDPYDWQ8M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CADisableMinimumFrameDurationOnPhone = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "需要使用相机拍摄地平线景物，并在月亮的位置叠加上月面。";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "需要定位来计算月亮的方位和高度。";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "需要把叠上月亮的照片保存到相册。";

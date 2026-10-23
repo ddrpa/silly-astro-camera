@@ -19,6 +19,7 @@ final class OrientationService: NSObject, CLLocationManagerDelegate {
     private var latestLocation: CLLocation?
     private var locationDenied = false
     private var usingTrueNorth = false
+    private var motionFramesPerSecond = 60
     private let queue = OperationQueue()
 
     override init() {
@@ -28,7 +29,8 @@ final class OrientationService: NSObject, CLLocationManagerDelegate {
         location.desiredAccuracy = kCLLocationAccuracyBest
     }
 
-    func start() {
+    func start(framesPerSecond: Int = 60) {
+        motionFramesPerSecond = max(framesPerSecond, 1)
         switch location.authorizationStatus {
         case .notDetermined:
             location.requestWhenInUseAuthorization()
@@ -85,7 +87,7 @@ final class OrientationService: NSObject, CLLocationManagerDelegate {
         } else {
             return
         }
-        motion.deviceMotionUpdateInterval = 1.0 / 60.0
+        motion.deviceMotionUpdateInterval = 1.0 / Double(motionFramesPerSecond)
         motion.startDeviceMotionUpdates(using: frame, to: queue) { [weak self] motion, _ in
             guard let self, let rotation = motion?.attitude.rotationMatrix else { return }
             self.publish(matrix: rotation)

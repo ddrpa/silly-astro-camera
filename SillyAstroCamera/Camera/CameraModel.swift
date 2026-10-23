@@ -60,6 +60,13 @@ final class CameraModel {
     private static let previewSpriteSize = 512
     private static let captureSpriteSize = 2048
 
+    private static var maximumDisplayFramesPerSecond: Int {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .map(\.screen.maximumFramesPerSecond)
+            .max() ?? 60
+    }
+
     func start() {
         albedo = MoonAlbedo.bundled()
         if albedo == nil {
@@ -84,7 +91,7 @@ final class CameraModel {
                 guard let self else { return }
                 if granted {
                     self.session.start()
-                    self.orientationService.start()
+                    self.orientationService.start(framesPerSecond: Self.maximumDisplayFramesPerSecond)
                 } else {
                     self.statusMessage = "需要相机权限才能取景"
                 }
